@@ -143,12 +143,17 @@ Panel {
           width: parent.width
           title: "pxm"
           meta: "One-time setup needed"
-          detail: "Sets up *.test sites with HTTPS, PHP and the web server. Asks for your password once."
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
             Text { text: root.pxIcon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.display }
           }
+        }
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: "Sets up *.test sites with HTTPS, PHP and the web server. Asks for your password once."
+          color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
         }
         Button {
           width: parent.width
