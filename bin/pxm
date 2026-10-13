@@ -1,0 +1,2435 @@
+#!/usr/bin/python3
+"""pxm: local PHP development for Omarchy, in the spirit of Laravel Herd.
+
+Setup
+  pxm setup                         one-time setup (asks for your password once)
+  pxm doctor                        check that everything is in place
+  pxm uninstall [--purge]           undo setup (--purge also deletes PHP versions and settings)
+
+PHP versions
+  pxm php list                      installed versions (* = global)
+  pxm php available                 versions you can install
+  pxm php install <8.4|8.4.23>      download a version (quick: prebuilt, no intl/sodium)
+  pxm php build <8.4|8.6.0RC3>      compile a version with ALL extensions (intl, sodium…),
+                                    incl. alphas/betas/RCs; runs in the background (~2-5 min)
+  pxm php prereleases               PHP alphas/betas/RCs you can build
+  pxm php use <8.4|system>          set the global version
+  pxm php isolate <8.4|system>      pin the current project (writes .php-version)
+  pxm php unisolate                 remove the pin
+  pxm php uninstall <8.4.23>        remove a version
+  pxm php which                     which PHP runs in this folder
+  pxm php info                      versions, extensions and php.ini paths
+
+Node versions (uses mise, which Omarchy already ships; pxm just drives it)
+  pxm node list                     installed versions (* = global)
+  pxm node available                Node lines you can install (LTS marked)
+  pxm node install <24|lts|24.11.0>
+  pxm node use <24|lts|latest>      set the global version
+  pxm node isolate <22> [path]      pin a project (writes .nvmrc)
+  pxm node unisolate [path]         remove the pin
+  pxm node uninstall <24.11.0>
+  pxm node which [path]             which Node runs in this folder
+  pxm node nvmrc on|off             follow .nvmrc / .node-version files (on by default)
+
+Sites (every folder in your sites folder becomes https://<folder>.test)
+  pxm sites                         list sites
+  pxm link [name]                   serve the current folder as https://<name>.test
+  pxm unlink <name>                 stop serving a linked folder
+  pxm secure <name>                 HTTPS on (the default)
+  pxm unsecure <name>               plain http
+  pxm open [name|url]               open a site (or any URL) in your browser
+  pxm apply                         regenerate the web server config (runs automatically)
+  pxm trust                         trust pxm's local HTTPS certificate again
+
+Sharing (Cloudflare Tunnel)
+  pxm share [name] [--quick]        give a site a public https link: <name>.<your domain> once a domain
+                                    is connected, otherwise a random *.trycloudflare.com link
+  pxm share domain <example.com>    connect your own Cloudflare domain (one-time browser login)
+  pxm share domain off              go back to random links
+  pxm unshare [name]                stop sharing (the link stops working at once)
+  pxm shares                        what's being shared right now
+
+Services (Docker containers, created the first time you start them)
+  pxm service list                  dev services and whether they run
+  pxm service start <name>          web, mysql, postgres, redis, mailpit
+  pxm service stop <name>           stays stopped after a reboot
+
+Apps (which editor / terminal / file manager / browser pxm opens)
+  pxm prefs                         show your choices and what's installed
+  pxm prefs set editor zed          pick one: editor, terminal, files, browser
+  pxm prefs set editor system       back to Omarchy's default
+  pxm prefs set editor custom 'phpstorm {path}'   any command ({path} = folder/file)
+  pxm edit [path]                   open a folder or file in your editor
+  pxm term [path] [-- command]      open a terminal there
+  pxm files [path]                  open a folder in your file manager
+
+Other
+  pxm ui [section]                  open the pxm window (sites, php, node, services, mail, logs, settings)
+  pxm logs [site]                   recent PHP / Laravel errors for a site
+  pxm mail test [to]                send a test email to Mailpit
+  pxm status --json                 everything, for the bar panel and window
+  pxm --version
+"""
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+DATA = HOME / '.local/share/pxm'
+PHPS = DATA / 'php'
+SHIMS = DATA / 'bin'
+LOGS = DATA / 'log'
+CONF_DIR = HOME / '.config/pxm'
+CONF = CONF_DIR / 'config.json'
+GLOBAL_FILE = CONF_DIR / 'global'          # read by the shell shim (fast, no JSON)
+SYSTEM_PHP = '/usr/bin/php'                # Arch's php package ("system" in pxm), if installed
+BUILDS = 'https://dl.static-php.dev/static-php-cli/common/'
+CACHE = HOME / '.cache/pxm'
+SELF = Path(__file__).resolve()            # bin/pxm inside the Omarchy plugin folder
+PLUGIN_DIR = SELF.parent.parent
+PLUGIN_ID = 'pxm'
+LINK = HOME / '.local/bin/pxm'             # `pxm` on PATH (created by pxm setup)
+SERVICES = [  # id, name, port, url to open (or None), how it runs
+    ('web', 'Web server (Caddy)', 443, None, 'systemd:pxm-caddy.service'),
+    ('mysql', 'MySQL', 3306, None, 'docker:mysql8'),
+    ('postgres', 'PostgreSQL', 5432, None, 'docker:postgres18'),
+    ('redis', 'Redis', 6379, None, 'docker:redis'),
+    ('mailpit', 'Mailpit', 8025, 'http://localhost:8025', 'docker:mailpit'),
+]
+# How each container is created the first time it's started. Same names and settings as Omarchy's
+# Install > Development > Docker DB menu, so containers made there are picked up too.
+DOCKER_RUN = {
+    'mysql8': ['-p', '127.0.0.1:3306:3306', '-e', 'MYSQL_ROOT_PASSWORD=', '-e', 'MYSQL_ALLOW_EMPTY_PASSWORD=true',
+               'mysql:8.4'],
+    'postgres18': ['-p', '127.0.0.1:5432:5432', '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', 'postgres:18'],
+    'redis': ['-p', '127.0.0.1:6379:6379', 'redis:7'],
+    'mailpit': ['-p', '127.0.0.1:1025:1025', '-p', '127.0.0.1:8025:8025', 'axllent/mailpit'],
+}
+
+DEFAULT_CONFIG = {'sites_dir': '', 'links': {}, 'insecure': []}
+CADDYFILE = CONF_DIR / 'Caddyfile'
+CA_ROOT = HOME / '.local/share/caddy/pki/authorities/local/root.crt'
+CA_NAME = 'pxm local CA'
+CA_ANCHOR = '/etc/ca-certificates/trust-source/anchors/pxm-local-ca.crt'
+NSSDB = HOME / '.pki/nssdb'
+
+
+def version():
+    try:
+        return json.loads((PLUGIN_DIR / 'manifest.json').read_text()).get('version', '?')
+    except (OSError, ValueError):
+        return '?'
+
+
+def local_timezone():
+    """'Europe/Berlin' etc. from /etc/localtime, for php.ini's date.timezone."""
+    target = os.path.realpath('/etc/localtime')
+    return target.split('/zoneinfo/', 1)[1] if '/zoneinfo/' in target else 'UTC'
+
+
+def has_system_php():
+    return Path(SYSTEM_PHP).exists() and Path('/usr/bin/php-fpm').exists()
+
+
+# ------------------------------------------------------------------ config
+def load_config():
+    cfg = dict(DEFAULT_CONFIG)
+    if CONF.exists():
+        cfg.update(json.loads(CONF.read_text()))
+    return cfg
+
+
+def save_config(cfg):
+    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CONF.with_suffix('.tmp')
+    tmp.write_text(json.dumps(cfg, indent=2))
+    tmp.rename(CONF)
+
+
+def global_version():
+    try:
+        return GLOBAL_FILE.read_text().strip() or 'system'
+    except OSError:
+        return 'system'
+
+
+def die(msg):
+    print(f'pxm: {msg}', file=sys.stderr)
+    sys.exit(1)
+
+
+# ------------------------------------------------------------------ versions
+def vkey(v):
+    """8.6.0alpha1 < 8.6.0beta2 < 8.6.0RC3 < 8.6.0 < 8.6.1"""
+    m = re.match(r'(\d+)\.(\d+)(?:\.(\d+))?(?:(alpha|beta|RC)(\d+))?', v, re.I)
+    if not m:
+        return (0,)
+    stage = {'alpha': 0, 'beta': 1, 'rc': 2}.get((m.group(4) or '').lower(), 3)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0), stage, int(m.group(5) or 0))
+
+
+def installed():
+    """{full_version: path} for installed static builds."""
+    out = {}
+    if PHPS.exists():
+        for d in PHPS.iterdir():
+            if d.is_dir() and not d.is_symlink() and d.name != 'system' and (d / 'bin/php').exists():
+                out[d.name] = d
+    return dict(sorted(out.items(), key=lambda kv: vkey(kv[0])))
+
+
+def minor(v):
+    return '.'.join(v.split('.')[:2])
+
+
+def refresh_minor_links():
+    """php/8.4 -> php/8.4.23 (highest installed patch); the shim and FPM use these.
+    If a minor now points at a different build, restart its PHP-FPM so sites use it."""
+    before = {l.name: os.readlink(l) for l in PHPS.iterdir() if l.is_symlink()} if PHPS.exists() else {}
+    best = _relink()
+    for m, full in best.items():
+        if before.get(m) not in (None, full):
+            subprocess.run(['systemctl', '--user', 'try-restart', f'pxm-fpm@{m}.service'], capture_output=True)
+    return best
+
+
+def _relink():
+    best = {}
+    for full in installed():
+        m = minor(full)
+        if m not in best or vkey(full) > vkey(best[m]):
+            best[m] = full
+    for link in PHPS.iterdir() if PHPS.exists() else []:
+        if link.is_symlink():
+            link.unlink()
+    for m, full in best.items():
+        (PHPS / m).symlink_to(full)
+    return best
+
+
+def resolve(spec):
+    """'8.4' or '8.4.23' or 'system' -> canonical name stored in config ('8.4' / 'system')."""
+    if spec in ('system', 'sys'):
+        if not has_system_php():
+            die("Arch's PHP is not installed (sudo pacman -S php php-fpm)")
+        return 'system'
+    m = minor(spec)
+    if not (PHPS / m).exists():
+        die(f'PHP {spec} is not installed. Run: pxm php install {spec}')
+    return m
+
+
+def php_binary(name):
+    return SYSTEM_PHP if name == 'system' else str(PHPS / name / 'bin/php')
+
+
+def project_version(start=None):
+    d = Path(start or os.getcwd()).resolve()
+    for p in [d, *d.parents]:
+        f = p / '.php-version'
+        if f.is_file():
+            return f.read_text().strip(), p
+    return None, None
+
+
+def full_version(name):
+    if name == 'system':
+        if not Path(SYSTEM_PHP).exists():
+            return ''
+        r = subprocess.run([SYSTEM_PHP, '-r', 'echo PHP_VERSION;'], capture_output=True, text=True)
+        return r.stdout.strip() or '?'
+    target = PHPS / name
+    return os.path.basename(os.readlink(target)) if target.is_symlink() else name
+
+
+# ------------------------------------------------------------------ remote
+UA = {'User-Agent': 'pxm/1.0 (curl-compatible; +https://github.com/crazywhalecc/static-php-cli)'}
+
+
+def fetch(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
+        return r.read().decode()
+
+
+def download(url, dest):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=300) as r, open(dest, 'wb') as f:
+        shutil.copyfileobj(r, f)
+
+
+def available(max_age=6 * 3600):
+    """Latest prebuilt patch for each minor line: {'8.4': '8.4.23', ...} (cached for 6 h)."""
+    import time
+    cache = CACHE / 'available.json'
+    if max_age and cache.exists() and time.time() - cache.stat().st_mtime < max_age:
+        return json.loads(cache.read_text())
+    try:
+        listing = fetch(BUILDS)
+    except Exception:
+        return json.loads(cache.read_text()) if cache.exists() else {}
+    found = {}
+    for v in set(re.findall(r'php-(\d+\.\d+\.\d+)-fpm-linux-x86_64\.tar\.gz', listing)):
+        m = minor(v)
+        if m not in found or vkey(v) > vkey(found[m]):
+            found[m] = v
+    found = dict(sorted(found.items(), key=lambda kv: vkey(kv[0])))
+    CACHE.mkdir(parents=True, exist_ok=True)
+    (CACHE / 'available.json').write_text(json.dumps(found))
+    return found
+
+
+# ------------------------------------------------------------------ install
+PHP_INI = """; pxm defaults for local development (edit freely)
+memory_limit = 512M
+upload_max_filesize = 100M
+post_max_size = 100M
+max_execution_time = 120
+display_errors = On
+display_startup_errors = On
+error_reporting = E_ALL
+date.timezone = {tz}
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.validate_timestamps = 1
+opcache.revalidate_freq = 0
+"""
+
+FPM_CONF = """; pxm FPM pool for PHP {minor}
+[global]
+error_log = {logs}/php-{minor}-fpm.log
+daemonize = no
+
+[pxm]
+listen = {runtime}/php-fpm.sock
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 10
+pm.process_idle_timeout = 30s
+catch_workers_output = yes
+decorate_workers_output = no
+clear_env = no
+php_admin_value[error_log] = {logs}/php-{minor}.log
+"""
+
+
+def write_version_config(d, full):
+    m = minor(full)
+    etc = d / 'etc'
+    (etc / 'conf.d').mkdir(parents=True, exist_ok=True)
+    ini = etc / 'php.ini'
+    if not ini.exists():
+        ini.write_text(PHP_INI.format(tz=local_timezone()))
+    runtime = f"/run/user/{os.getuid()}/pxm-fpm-{m}"
+    (etc / 'php-fpm.conf').write_text(FPM_CONF.format(minor=m, logs=LOGS, runtime=runtime))
+
+
+def install(spec):
+    CACHE.mkdir(parents=True, exist_ok=True)
+    marker = CACHE / f'installing-{spec}'
+    marker.touch()
+    try:
+        _install(spec)
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def _install(spec):
+    avail = available(max_age=0)
+    full = spec if spec.count('.') == 2 else avail.get(spec)
+    if not full or minor(full) not in avail:
+        die(f"no prebuilt PHP {spec}. Available: {', '.join(avail.values())}")
+    dest = PHPS / full
+    if (dest / 'bin/php').exists():
+        print(f'PHP {full} is already installed.')
+    else:
+        print(f'Downloading PHP {full} (CLI + FPM, about 60 MB)…', flush=True)
+        tmp = Path(tempfile.mkdtemp(prefix='pxm-'))
+        try:
+            (tmp / 'bin').mkdir()
+            for kind in ('cli', 'fpm'):
+                url = f'{BUILDS}php-{full}-{kind}-linux-x86_64.tar.gz'
+                tgz = tmp / f'{kind}.tgz'
+                download(url, tgz)
+                with tarfile.open(tgz) as t:
+                    for m in t.getmembers():
+                        if m.isfile() and os.path.basename(m.name) in ('php', 'php-fpm'):
+                            m.name = os.path.basename(m.name)
+                            t.extract(m, tmp / 'bin', filter='data')
+            for b in ('php', 'php-fpm'):
+                os.chmod(tmp / 'bin' / b, 0o755)
+            PHPS.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(tmp), dest)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        write_version_config(dest, full)
+        print(f'Installed PHP {full}.')
+    refresh_minor_links()
+    write_shim()
+    if global_version() == 'system' and not GLOBAL_FILE.exists():
+        use(minor(full))
+
+
+def uninstall(spec):
+    targets = [v for v in installed() if v == spec or minor(v) == spec]
+    if not targets:
+        die(f'PHP {spec} is not installed.')
+    for v in targets:
+        shutil.rmtree(PHPS / v)
+        print(f'Removed PHP {v}.')
+    best = refresh_minor_links()
+    if global_version() != 'system' and not (PHPS / global_version()).exists():
+        fallback = 'system' if has_system_php() else (max(best, key=vkey) if best else None)
+        if fallback:
+            use(fallback)
+        else:
+            GLOBAL_FILE.unlink(missing_ok=True)
+            print('No PHP left. Install one: pxm php install 8.5')
+
+
+def use(spec):
+    name = resolve(spec)
+    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    GLOBAL_FILE.write_text(name + '\n')
+    write_shim()
+    print(f'Global PHP: {name} ({full_version(name)})')
+    if CADDYFILE.exists():
+        apply(quiet=True)
+
+
+def isolate(spec, path=None):
+    name = resolve(spec)
+    root = Path(path or os.getcwd()).resolve()
+    (root / '.php-version').write_text(name + '\n')
+    print(f'{root.name} now uses PHP {name} ({full_version(name)})')
+    if CADDYFILE.exists():
+        apply(quiet=True)
+
+
+def unisolate(path=None):
+    _, root = project_version(path)
+    if not root:
+        die('this folder has no .php-version')
+    (root / '.php-version').unlink()
+    print(f'{root.name} now follows the global PHP ({global_version()})')
+    if CADDYFILE.exists():
+        apply(quiet=True)
+
+
+
+# ------------------------------------------------------------------ full builds (static-php-cli)
+SPC = DATA / 'spc/spc'
+SPC_WORK = DATA / 'spc/work'
+FULL_EXTENSIONS = ('bcmath,bz2,calendar,ctype,curl,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,intl,mbstring,'
+                   'mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,'
+                   'readline,redis,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,'
+                   'xsl,zip,zlib')
+BUILDABLE_MINORS = ['8.1', '8.2', '8.3', '8.4', '8.5']
+PRERELEASES_URL = 'https://www.php.net/pre-release-builds.php?format=json'
+
+
+def prereleases(max_age=3 * 3600):
+    """Active PHP alphas/betas/RCs from php.net: [{'version': '8.6.0RC3', 'url': ..., 'date': ...}]"""
+    import time
+    cache = CACHE / 'prereleases.json'
+    if max_age and cache.exists() and time.time() - cache.stat().st_mtime < max_age:
+        return json.loads(cache.read_text())
+    try:
+        data = json.loads(fetch(PRERELEASES_URL))
+    except Exception:
+        return json.loads(cache.read_text()) if cache.exists() else []
+    out = []
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            continue
+        r = entry.get('release') or {}
+        files = r.get('files') or {}
+        url = (files.get('xz') or files.get('gz') or {}).get('path')
+        if entry.get('active') and r.get('version') and url:
+            out.append({'version': r['version'], 'url': url, 'date': r.get('date', ''),
+                        'sha256': (files.get('xz') or files.get('gz') or {}).get('sha256', '')})
+    out.sort(key=lambda x: vkey(x['version']), reverse=True)
+    CACHE.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(out))
+    return out
+
+
+def building():
+    """{spec: last status line} for builds in progress."""
+    out = {}
+    if CACHE.exists():
+        for f in CACHE.glob('building-*'):
+            out[f.name.removeprefix('building-')] = f.read_text().strip()
+    return out
+
+
+def build(spec, foreground=False):
+    """Compile PHP `spec` (a minor like 8.4 = latest stable, or an exact version / pre-release)."""
+    if not foreground:
+        # run detached so it survives closing the terminal or the panel
+        unit = 'pxm-build-' + re.sub(r'[^A-Za-z0-9]', '-', spec)
+        log = LOGS / f'build-{spec}.log'
+        LOGS.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(['systemd-run', '--user', '--collect', '--quiet', f'--unit={unit}',
+                            '--property=Nice=10', f'--property=StandardOutput=file:{log}',
+                            f'--property=StandardError=file:{log}',
+                            str(Path(__file__).resolve()), 'php', 'build', spec, '--foreground'],
+                           capture_output=True, text=True)
+        if r.returncode:
+            die(r.stderr.strip() or 'could not start the build')
+        print(f'Building PHP {spec} in the background (log: {log}).')
+        print('You will get a notification when it is done (about 5 minutes the first time, ~2 minutes after that).')
+        return
+
+    import fcntl
+    CACHE.mkdir(parents=True, exist_ok=True)
+    lock = open(CACHE / 'build.lock', 'w')
+    marker = CACHE / f'building-{spec}'
+    marker.write_text('Waiting for another build to finish…')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    env = dict(os.environ, SPC_LIBC='glibc')
+    SPC_WORK.mkdir(parents=True, exist_ok=True)
+
+    def step(msg):
+        marker.write_text(msg)
+        print(f'== {msg}', flush=True)
+
+    def run(args):
+        p = subprocess.Popen([str(SPC), *args], cwd=SPC_WORK, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+        for line in p.stdout:
+            line = re.sub(r'\x1b\[[0-9;]*m', '', line).rstrip()
+            print(line, flush=True)
+            m = re.search(r'\[I\] (Building|Downloading|Compiling|Patching|Extracting)[^\[]*', line)
+            if m:
+                marker.write_text(m.group(0).removeprefix('[I] ').strip()[:80])
+        if p.wait():
+            raise RuntimeError(f'spc {args[0]} failed (see log)')
+
+    try:
+        if not SPC.exists():
+            step('Downloading the build tool…')
+            SPC.parent.mkdir(parents=True, exist_ok=True)
+            download('https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-linux-x86_64', SPC)
+            SPC.chmod(0o755)
+        if not (SPC_WORK / 'pkgroot').exists():
+            step('Preparing the build tool…')
+            run(['doctor', '--auto-fix'])
+        step('Downloading PHP source…')
+        dl = ['download', f'--for-extensions={FULL_EXTENSIONS}', '--ignore-cache-sources=php-src']
+        if re.fullmatch(r'\d+\.\d+', spec):
+            dl.append(f'--with-php={spec}')
+        else:
+            pre = {p['version']: p['url'] for p in prereleases(max_age=0)}
+            url = pre.get(spec) or f'https://www.php.net/distributions/php-{spec}.tar.xz'
+            dl += [f'--with-php={minor(spec)}', f'--custom-url=php-src:{url}']
+        run(dl)
+        step('Compiling PHP (this is the long part)…')
+        run(['build', FULL_EXTENSIONS, '--build-cli', '--build-fpm'])
+        built = SPC_WORK / 'buildroot/bin'
+        version = subprocess.run([str(built / 'php'), '-r', 'echo PHP_VERSION;'],
+                                 capture_output=True, text=True).stdout.strip()
+        if not version:
+            raise RuntimeError('the build produced no working php binary')
+        step(f'Installing PHP {version}…')
+        dest = PHPS / version
+        if dest.exists():
+            shutil.rmtree(dest)
+        (dest / 'bin').mkdir(parents=True)
+        for b in ('php', 'php-fpm'):
+            shutil.copy2(built / b, dest / 'bin' / b)
+        write_version_config(dest, version)
+        (dest / 'pxm.json').write_text(json.dumps({'kind': 'full', 'extensions': FULL_EXTENSIONS}))
+        refresh_minor_links()
+        write_shim()
+        if CADDYFILE.exists():
+            apply(quiet=True)
+        notify_user(f'PHP {version} is ready', 'Full build with intl, sodium and more. Switch to it in pxm.')
+        print(f'Installed PHP {version} (full build).')
+    except Exception as e:
+        notify_user(f'Building PHP {spec} failed', f'{e}. Log: {LOGS}/build-{spec}.log')
+        raise
+    finally:
+        marker.unlink(missing_ok=True)
+        lock.close()
+
+
+def notify_user(title, body=''):
+    subprocess.run(['omarchy-notification-send', '-g', '\U000F031F', title, body], capture_output=True)
+
+
+def build_kind(full):
+    meta = PHPS / full / 'pxm.json'
+    try:
+        return json.loads(meta.read_text()).get('kind', 'prebuilt')
+    except OSError:
+        return 'prebuilt'
+
+# ------------------------------------------------------------------ shim
+SHIM = r'''#!/bin/bash
+# pxm PHP shim: picks the project's PHP (.php-version) or the global one (pxm php use).
+v=
+d=$PWD
+while [ -n "$d" ]; do
+  if [ -f "$d/.php-version" ]; then read -r v < "$d/.php-version"; break; fi
+  d=${d%/*}
+done
+[ -z "$v" ] && read -r v < "$HOME/.config/pxm/global" 2>/dev/null
+if [ -z "$v" ] || [ "$v" = system ] || [ ! -x "$HOME/.local/share/pxm/php/$v/bin/php" ]; then
+  [ -x /usr/bin/php ] && exec /usr/bin/php "$@"
+  echo "php: no PHP version is set up yet. Run: pxm php install 8.5" >&2
+  exit 127
+fi
+p=$HOME/.local/share/pxm/php/$v
+PHPRC=$p/etc PHP_INI_SCAN_DIR=$p/etc/conf.d exec "$p/bin/php" "$@"
+'''
+
+
+def write_shim():
+    SHIMS.mkdir(parents=True, exist_ok=True)
+    shim = SHIMS / 'php'
+    if not shim.exists() or shim.read_text() != SHIM:
+        shim.write_text(SHIM)
+        shim.chmod(0o755)
+
+
+
+# ------------------------------------------------------------------ sites
+def ensure_system_dir():
+    """php/system: lets sites run on Arch's PHP (with Xdebug) through the same FPM template."""
+    if not has_system_php():
+        return
+    d = PHPS / 'system'
+    (d / 'bin').mkdir(parents=True, exist_ok=True)
+    (d / 'etc').mkdir(parents=True, exist_ok=True)
+    for link, target in ((d / 'bin/php', '/usr/bin/php'), (d / 'bin/php-fpm', '/usr/bin/php-fpm'),
+                         (d / 'etc/php.ini', '/etc/php/php.ini'), (d / 'etc/conf.d', '/etc/php/conf.d')):
+        if not link.is_symlink():
+            if link.exists():
+                link.unlink()
+            link.symlink_to(target)
+    runtime = f"/run/user/{os.getuid()}/pxm-fpm-system"
+    (d / 'etc/php-fpm.conf').write_text(FPM_CONF.format(minor='system', logs=LOGS, runtime=runtime))
+
+
+def slug(name):
+    return re.sub(r'[^a-z0-9-]+', '-', name.lower()).strip('-') or 'site'
+
+
+def sites(cfg=None):
+    cfg = cfg or load_config()
+    found = {}
+    sd = Path(cfg['sites_dir']).expanduser() if cfg.get('sites_dir') else None
+    if sd and sd.is_dir():
+        for d in sorted(sd.iterdir()):
+            if d.is_dir() and not d.name.startswith('.'):
+                found[slug(d.name)] = {'path': str(d), 'source': 'parked'}
+    for name, path in cfg['links'].items():
+        found[name] = {'path': path, 'source': 'linked'}
+    g = global_version()
+    for name, s in found.items():
+        path = Path(s['path'])
+        pinned, root = project_version(path)
+        s['php'] = pinned if pinned and root and str(path).startswith(str(root)) else g
+        if s['php'] != 'system' and not (PHPS / s['php']).exists():
+            s['php'] = g
+        s['php_pinned'] = bool(pinned)
+        s['secure'] = name not in cfg['insecure']
+        s['url'] = f"{'https' if s['secure'] else 'http'}://{name}.test"
+        s['docroot'] = str(path / 'public') if (path / 'public/index.php').exists() else str(path)
+        s['laravel'] = (path / 'artisan').exists()
+        s['exists'] = path.is_dir()
+    return dict(sorted(found.items()))
+
+
+def fpm_socket(version):
+    return f"/run/user/{os.getuid()}/pxm-fpm-{version}/php-fpm.sock"
+
+
+def caddyfile(all_sites):
+    out = ['# GENERATED by pxm. Do not edit: run `pxm apply` (it runs automatically).',
+           '{', '\tadmin localhost:2019', '\tlocal_certs', '\tskip_install_trust', '}', '']
+    for name, s in all_sites.items():
+        if not s['exists']:
+            continue
+        host = f"{name}.test" if s['secure'] else f"http://{name}.test"
+        out += [f'{host} {{',
+                f'\troot * "{s["docroot"]}"',
+                '\tencode zstd gzip',
+                f'\tphp_fastcgi unix/{fpm_socket(s["php"])}',
+                '\tfile_server',
+                '}', '']
+    # shared sites: a private entrance on 127.0.0.1 for cloudflared. Any Host header is accepted (the visitor's
+    # *.trycloudflare.com), and PHP is told the request is https so Laravel builds https links.
+    cfg = load_config()
+    for name in cfg.get('shared', []):
+        s = all_sites.get(name)
+        port = cfg.get('share_ports', {}).get(name)
+        if not s or not s['exists'] or not port:
+            continue
+        out += [f'http://:{port} {{',
+                '\tbind 127.0.0.1',
+                f'\troot * "{s["docroot"]}"',
+                '\tencode zstd gzip',
+                f'\tphp_fastcgi unix/{fpm_socket(s["php"])} {{',
+                '\t\tenv HTTPS on',
+                '\t\tenv SERVER_PORT 443',
+                '\t}',
+                '\tfile_server',
+                '}', '']
+    return '\n'.join(out)
+
+
+def systemctl(*args):
+    return subprocess.run(['systemctl', '--user', *args], capture_output=True, text=True)
+
+
+def apply(quiet=False):
+    cfg = load_config()
+    ensure_system_dir()
+    all_sites = sites(cfg)
+    text = caddyfile(all_sites)
+    changed = not CADDYFILE.exists() or CADDYFILE.read_text() != text
+    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    CADDYFILE.write_text(text)
+
+    wanted = {s['php'] for s in all_sites.values() if s['exists']}
+    running = set()
+    r = systemctl('list-units', '--plain', '--no-legend', 'pxm-fpm@*')
+    for line in r.stdout.splitlines():
+        m = re.match(r'pxm-fpm@(.+)\.service\s+\S+\s+active', line)
+        if m:
+            running.add(m.group(1))
+    # start at login only the PHP-FPM versions that sites use
+    for v in sorted(wanted - running):
+        systemctl('enable', '--now', f'pxm-fpm@{v}.service')
+    for v in sorted(running - wanted):
+        systemctl('disable', '--now', f'pxm-fpm@{v}.service')
+    for v in sorted(wanted & running):
+        systemctl('enable', f'pxm-fpm@{v}.service')
+
+    if cfg.get('web_stopped'):
+        pass                       # user turned the web server off (pxm service start web)
+    elif systemctl('is-active', 'pxm-caddy.service').stdout.strip() != 'active':
+        systemctl('enable', '--now', 'pxm-caddy.service')
+        systemctl('enable', '--now', 'pxm-sites.path')
+    elif changed:
+        systemctl('reload', 'pxm-caddy.service')
+    # A brand-new folder (e.g. `laravel new` still running) has no index file yet: look again shortly,
+    # for up to 10 minutes after the folder last changed.
+    import time
+    pending = [s for s in all_sites.values() if s['exists'] and not any(
+        (Path(s['docroot']) / f).exists() for f in ('index.php', 'index.html'))
+        and time.time() - Path(s['path']).stat().st_mtime < 600]
+    if pending:
+        subprocess.run(['systemd-run', '--user', '--quiet', '--collect', '--unit=pxm-recheck', '--on-active=20',
+                        str(Path(__file__).resolve()), 'apply', '--quiet'], capture_output=True)
+    if not quiet:
+        served = sum(1 for s in all_sites.values() if s['exists'])
+        print(f"{served} site(s) served · PHP-FPM running: {', '.join(sorted(wanted)) or 'none'}")
+
+
+def find_site(name=None):
+    all_sites = sites()
+    if name:
+        name = slug(name.removesuffix('.test'))
+        if name not in all_sites:
+            die(f'no site called {name}.test (see: pxm sites)')
+        return name, all_sites[name]
+    cwd = Path.cwd().resolve()
+    for n, s in all_sites.items():
+        if cwd == Path(s['path']).resolve() or Path(s['path']).resolve() in cwd.parents:
+            return n, s
+    die('this folder is not a site; pass a name, or run `pxm link` here')
+
+
+def link(name=None, path=None):
+    cfg = load_config()
+    path = str(Path(path or os.getcwd()).resolve())
+    name = slug(name or Path(path).name)
+    cfg['links'][name] = path
+    save_config(cfg)
+    apply(quiet=True)
+    print(f'Linked {path} → https://{name}.test')
+
+
+def unlink(name):
+    cfg = load_config()
+    name = slug(name.removesuffix('.test'))
+    if name not in cfg['links']:
+        die(f'{name}.test is not a linked site (parked sites go away when you move the folder out of the sites folder)')
+    del cfg['links'][name]
+    save_config(cfg)
+    apply(quiet=True)
+    print(f'Unlinked {name}.test')
+
+
+def set_secure(name, on):
+    name, _ = find_site(name)
+    cfg = load_config()
+    if on and name in cfg['insecure']:
+        cfg['insecure'].remove(name)
+    if not on and name not in cfg['insecure']:
+        cfg['insecure'].append(name)
+    save_config(cfg)
+    apply(quiet=True)
+    print(f"{name}.test now uses {'https' if on else 'http'}")
+
+
+def trust_nss():
+    """Chromium (and other NSS apps) read the user's own certificate database."""
+    if not shutil.which('certutil') or not CA_ROOT.exists():
+        return False
+    NSSDB.mkdir(parents=True, exist_ok=True)
+    if not (NSSDB / 'cert9.db').exists():
+        subprocess.run(['certutil', '-N', '--empty-password', '-d', f'sql:{NSSDB}'], check=True)
+    subprocess.run(['certutil', '-D', '-d', f'sql:{NSSDB}', '-n', CA_NAME], capture_output=True)
+    return subprocess.run(['certutil', '-A', '-d', f'sql:{NSSDB}', '-t', 'C,,', '-n', CA_NAME, '-i', str(CA_ROOT)],
+                          capture_output=True).returncode == 0
+
+
+def trust():
+    if not CA_ROOT.exists():
+        die('the local certificate authority does not exist yet: run pxm setup')
+    trust_nss()
+    # everything else (curl, PHP, Node, Firefox on Arch) uses the system trust store: needs admin
+    r = subprocess.run(['pkexec', 'sh', '-c', f'install -m 644 {shlex.quote(str(CA_ROOT))} {CA_ANCHOR} && trust extract-compat'])
+    if r.returncode:
+        die('could not add the certificate to the system trust store')
+    print('Trusted the pxm HTTPS certificate. Restart your browser if it was open.')
+
+
+def port_open(port):
+    import socket
+    with socket.socket() as s:
+        s.settimeout(0.3)
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+
+# ------------------------------------------------------------------ services
+SERVICE_INFO = {
+    'web': {'details': [['Sites folder', '(set by pxm setup)'], ['Address', 'https://<folder>.test'],
+                        ['Certificate', '~/.local/share/caddy/pki/authorities/local/root.crt']],
+            'env': 'APP_URL=https://<your-site>.test'},
+    'mysql': {'details': [['Host', '127.0.0.1'], ['Port', '3306'], ['User', 'root'], ['Password', '(empty)']],
+              'env': 'DB_CONNECTION=mysql\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_DATABASE=laravel\nDB_USERNAME=root\nDB_PASSWORD='},
+    'postgres': {'details': [['Host', '127.0.0.1'], ['Port', '5432'], ['User', 'postgres'], ['Password', '(empty)']],
+                 'env': 'DB_CONNECTION=pgsql\nDB_HOST=127.0.0.1\nDB_PORT=5432\nDB_DATABASE=laravel\nDB_USERNAME=postgres\nDB_PASSWORD='},
+    'redis': {'details': [['Host', '127.0.0.1'], ['Port', '6379'], ['Password', '(none)']],
+              'env': 'REDIS_CLIENT=phpredis\nREDIS_HOST=127.0.0.1\nREDIS_PORT=6379\nREDIS_PASSWORD=null'},
+    'mailpit': {'details': [['SMTP host', '127.0.0.1'], ['SMTP port', '1025'], ['Login', 'none needed'],
+                            ['Encryption', 'none'], ['Inbox', 'http://localhost:8025']],
+                'env': 'MAIL_MAILER=smtp\nMAIL_SCHEME=null\nMAIL_HOST=127.0.0.1\nMAIL_PORT=1025\nMAIL_USERNAME=null\nMAIL_PASSWORD=null'},
+}
+
+
+def service_info(sid, cfg):
+    info = json.loads(json.dumps(SERVICE_INFO.get(sid, {'details': [], 'env': ''})))
+    if sid == 'web':
+        info['details'][0][1] = str(cfg.get('sites_dir') or '').replace(str(HOME), '~')
+    return info
+
+
+def find_service(name):
+    key = name.lower()
+    for s in SERVICES:
+        if key in (s[0], s[1].lower()) or s[1].lower().startswith(key):
+            return s
+    die(f"unknown service {name!r}. Services: {', '.join(s[0] for s in SERVICES)}")
+
+
+def docker_sh(script):
+    """Run a docker shell snippet. Omarchy keeps users out of the docker group by default (it's root-equivalent),
+    so when the socket refuses us, run it through one admin prompt instead."""
+    if not shutil.which('docker'):
+        die('this service runs in Docker, which is not installed: sudo pacman -S docker && sudo systemctl enable --now docker')
+    r = subprocess.run(['docker', 'info', '--format', '{{.ID}}'], capture_output=True, text=True)
+    if r.returncode and 'permission denied' in (r.stderr or '').lower():
+        return subprocess.run(['pkexec', 'sh', '-c', script], capture_output=True, text=True)
+    if r.returncode:
+        die('Docker is not running: sudo systemctl enable --now docker')
+    return subprocess.run(['sh', '-c', script], capture_output=True, text=True)
+
+
+def service(action, name):
+    sid, label, port, _, how = find_service(name)
+    kind, target = how.split(':', 1)
+    if kind == 'systemd':
+        cfg = load_config()
+        cfg['web_stopped'] = action == 'stop'
+        save_config(cfg)
+        systemctl('disable' if action == 'stop' else 'enable', '--now', target)
+        if action == 'stop':
+            systemctl('stop', 'pxm-sites.path')
+        else:
+            systemctl('enable', '--now', 'pxm-sites.path')
+            apply(quiet=True)
+    else:
+        if action == 'start':
+            # first start: create the container (downloading the image can take a minute)
+            create = shlex.join(['docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *DOCKER_RUN[target]])
+            r = docker_sh(f'docker start {target} >/dev/null 2>&1 && echo started || {create}')
+        else:
+            r = docker_sh(f'docker stop {target}')
+        if r.returncode:
+            out = (r.stderr or r.stdout).strip().splitlines()
+            die(f'could not {action} {label}: {out[-1] if out else "unknown error"}')
+        if action == 'start' and 'started' not in r.stdout:
+            print(f'Created the {label} container.', flush=True)
+    import time
+    for _ in range(40 if action == 'stop' or kind == 'systemd' else 480):   # wait until the port agrees
+        if port_open(port) == (action == 'start'):
+            break
+        time.sleep(0.25)
+    print(f"{label} {'started' if action == 'start' else 'stopped'}"
+          + (' (stays stopped after reboot)' if action == 'stop' else ''))
+
+
+# ------------------------------------------------------------------ share (Cloudflare quick tunnels)
+SHARE_PORT_BASE = 8400
+SHARE_URL_RE = re.compile(r'https://[a-z0-9-]+\.trycloudflare\.com')
+
+
+def share_unit(name):
+    return f'pxm-share-{name}.service'
+
+
+def share_log(name):
+    return LOGS / f'share-{name}.log'
+
+
+def active_shares():
+    r = systemctl('list-units', '--plain', '--no-legend', '--state=active,activating', 'pxm-share-*', TUNNEL_UNIT)
+    active = {m.group(1) for m in re.finditer(r'^pxm-share-(\S+)\.service', r.stdout, re.M)}
+    if re.search(r'^pxm-tunnel\.service', r.stdout, re.M):
+        cfg = load_config()
+        active |= {n for n in cfg.get('shared', []) if cfg.get('share_mode', {}).get(n) == 'domain'}
+    return active
+
+
+def share_url(name):
+    cfg = load_config()
+    if cfg.get('share_mode', {}).get(name) == 'domain' and cfg.get('share_domain'):
+        return f"https://{name}.{cfg['share_domain']}"
+    try:
+        found = SHARE_URL_RE.findall(share_log(name).read_text(errors='replace'))
+    except OSError:
+        return ''
+    return found[-1] if found else ''
+
+
+def wait_reachable(url, timeout=60):
+    """A new quick-tunnel link needs ~10 s before it answers. Probe it via Cloudflare DNS-over-HTTPS so an early
+    'not found' doesn't get cached by this laptop's resolver (which would break the link here for a while)."""
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        r = subprocess.run(['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '8',
+                            '--doh-url', 'https://1.1.1.1/dns-query', url], capture_output=True, text=True)
+        if r.stdout.strip() not in ('', '000', '530', '502', '503'):
+            return True
+        time.sleep(2)
+    return False
+
+
+def is_phpmyadmin(path):
+    try:
+        return '"phpmyadmin/phpmyadmin"' in (Path(path) / 'composer.json').read_text()
+    except OSError:
+        return (Path(path) / 'config.inc.php').exists() and (Path(path) / 'libraries').is_dir()
+
+
+def share_warnings(s):
+    out = []
+    path = Path(s['path'])
+    env = path / '.env'
+    if env.exists() and re.search(r'^\s*APP_DEBUG\s*=\s*"?true', env.read_text(errors='replace'), re.M | re.I):
+        out.append('Debug mode is on (APP_DEBUG=true): if a page errors, visitors see the full error page, '
+                   'including values from .env.')
+    if (path / 'public/hot').exists():
+        out.append('`npm run dev` is running: visitors won\'t get the styles and scripts. '
+                   'Stop it and run `npm run build` while sharing.')
+    return out
+
+
+CF_DIR = HOME / '.cloudflared'
+TUNNEL_CONFIG = CONF_DIR / 'cloudflared.yml'
+TUNNEL_UNIT = 'pxm-tunnel.service'
+
+
+def cloudflared(*args):
+    return subprocess.run([shutil.which('cloudflared') or 'cloudflared', *args], capture_output=True, text=True)
+
+
+def share_domain_setup(domain):
+    """Connect a Cloudflare domain: browser login (once), then a named tunnel for this laptop."""
+    if not shutil.which('cloudflared'):
+        die('cloudflared is not installed: sudo pacman -S cloudflared')
+    domain = domain.strip().lower().removeprefix('https://').removeprefix('http://').strip('/')
+    if not re.fullmatch(r'[a-z0-9-]+(\.[a-z0-9-]+)+', domain):
+        die(f'"{domain}" does not look like a domain')
+    if not (CF_DIR / 'cert.pem').exists():
+        print(f'A browser tab will open: pick {domain} and click Authorize.', flush=True)
+        if subprocess.run([shutil.which('cloudflared'), 'tunnel', 'login']).returncode or not (CF_DIR / 'cert.pem').exists():
+            die('Cloudflare login did not finish. Try again: pxm share domain ' + domain)
+    import socket
+    tname = 'pxm-' + re.sub(r'[^a-z0-9-]', '-', socket.gethostname().lower())
+    try:
+        tunnels = json.loads(cloudflared('tunnel', 'list', '-o', 'json').stdout or '[]') or []
+    except ValueError:
+        tunnels = []
+    tid = next((x['id'] for x in tunnels if x.get('name') == tname), None)
+    if tid and not (CF_DIR / f'{tid}.json').exists():
+        die(f'A tunnel named {tname} exists in your Cloudflare account but its key is not on this laptop. '
+            f'Delete it in the Cloudflare dashboard (Zero Trust > Networks > Tunnels) and run this again.')
+    if not tid:
+        r = cloudflared('tunnel', 'create', tname)
+        m = re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', r.stdout + r.stderr)
+        if r.returncode or not m:
+            die('could not create the tunnel: ' + (r.stderr.strip() or r.stdout.strip()))
+        tid = m.group(0)
+    cfg = load_config()
+    cfg['share_domain'] = domain
+    cfg['tunnel'] = {'name': tname, 'id': tid}
+    save_config(cfg)
+    print(f'Connected. Shared sites now get https://<site>.{domain}')
+
+
+def share_domain_off():
+    cfg = load_config()
+    for n in [n for n in cfg.get('shared', []) if cfg.get('share_mode', {}).get(n) == 'domain']:
+        unshare(n)
+    cfg = load_config()
+    cfg['share_domain'] = None
+    save_config(cfg)
+    print('Sharing uses random *.trycloudflare.com links again')
+
+
+def write_tunnel_config(cfg):
+    """One named tunnel serves every site shared on the domain; returns how many."""
+    t = cfg.get('tunnel') or {}
+    names = [n for n in cfg.get('shared', []) if cfg.get('share_mode', {}).get(n) == 'domain']
+    lines = [f"tunnel: {t.get('id')}", f"credentials-file: {CF_DIR / (str(t.get('id')) + '.json')}", 'ingress:']
+    for n in names:
+        lines += [f"  - hostname: {n}.{cfg['share_domain']}", f"    service: http://127.0.0.1:{cfg['share_ports'][n]}"]
+    lines += ['  - service: http_status:404', '']
+    CONF_DIR.mkdir(parents=True, exist_ok=True)
+    TUNNEL_CONFIG.write_text('\n'.join(lines))
+    return len(names)
+
+
+def restart_tunnel(cfg):
+    n = write_tunnel_config(cfg)
+    systemctl('stop', TUNNEL_UNIT)
+    if not n:
+        return
+    systemctl('reset-failed', TUNNEL_UNIT)
+    LOGS.mkdir(parents=True, exist_ok=True)
+    log = LOGS / 'tunnel.log'
+    log.write_text('')
+    r = subprocess.run(['systemd-run', '--user', '--quiet', '--collect', f'--unit={TUNNEL_UNIT}',
+                        '-p', 'Restart=on-failure', '-p', 'RestartSec=3',
+                        '-p', f'StandardOutput=append:{log}', '-p', f'StandardError=append:{log}',
+                        shutil.which('cloudflared'), 'tunnel', '--no-autoupdate', '--config', str(TUNNEL_CONFIG), 'run'],
+                       capture_output=True, text=True)
+    if r.returncode:
+        die(f'could not start the tunnel: {r.stderr.strip()}')
+
+
+def share(name=None, quick=False):
+    if not shutil.which('cloudflared'):
+        die('cloudflared is not installed: sudo pacman -S cloudflared')
+    site_name, s = find_site(name)
+    if is_phpmyadmin(s['path']):
+        die(f'{site_name}.test is phpMyAdmin, which logs in automatically as root. Sharing it would let anyone '
+            'with the link see and change all your databases, so pxm won\'t share it.')
+    cfg = load_config()
+    if cfg.get('web_stopped'):
+        die('The web server is stopped. Start it first: pxm service start web')
+    ports = cfg.setdefault('share_ports', {})
+    if site_name not in ports:
+        used = set(ports.values())
+        port = SHARE_PORT_BASE
+        while port in used or port_open(port):
+            port += 1
+        ports[site_name] = port
+    domain = None if quick else cfg.get('share_domain')
+    if domain:
+        host = f'{site_name}.{domain}'
+        r = cloudflared('tunnel', 'route', 'dns', cfg['tunnel']['id'], host)
+        out = (r.stdout + r.stderr).strip()
+        if r.returncode and 'already configured' not in out:
+            if 'already exists' in out:
+                die(f'{host} already exists in your Cloudflare DNS and points somewhere else. pxm won\'t overwrite it: '
+                    f'rename the site folder, or remove that DNS record if you don\'t need it.')
+            die(f'could not create {host}: {out.splitlines()[-1] if out else "unknown error"}')
+    shared = cfg.setdefault('shared', [])
+    if site_name not in shared:
+        shared.append(site_name)
+    cfg.setdefault('share_mode', {})[site_name] = 'domain' if domain else 'quick'
+    save_config(cfg)
+    apply(quiet=True)
+
+    if domain:
+        systemctl('stop', share_unit(site_name))
+        restart_tunnel(cfg)
+        url = f'https://{site_name}.{domain}'
+        return share_done(site_name, s, url)
+
+    unit = share_unit(site_name)
+    if site_name not in active_shares():
+        LOGS.mkdir(parents=True, exist_ok=True)
+        share_log(site_name).write_text('')
+        systemctl('reset-failed', unit)
+        r = subprocess.run(['systemd-run', '--user', '--quiet', '--collect', f'--unit={unit}',
+                            '-p', 'Restart=on-failure', '-p', 'RestartSec=3',
+                            '-p', f'StandardOutput=append:{share_log(site_name)}',
+                            '-p', f'StandardError=append:{share_log(site_name)}',
+                            shutil.which('cloudflared'), 'tunnel', '--no-autoupdate',
+                            '--url', f'http://127.0.0.1:{ports[site_name]}'],
+                           capture_output=True, text=True)
+        if r.returncode:
+            die(f'could not start the tunnel: {r.stderr.strip()}')
+    import time
+    url = ''
+    for _ in range(60):
+        url = share_url(site_name)
+        if url:
+            break
+        time.sleep(0.5)
+    if not url:
+        die(f'The tunnel for {site_name}.test started but no link appeared yet. Check: pxm shares '
+            f'(log: {share_log(site_name)})')
+    # wl-copy keeps running in the background to serve the clipboard: don't wait on its pipes
+    return share_done(site_name, s, url)
+
+
+def share_done(site_name, s, url):
+    ready = wait_reachable(url)
+    # if this laptop looked the name up before Cloudflare's record existed, it cached "not found": clear that
+    subprocess.run(['resolvectl', 'flush-caches'], capture_output=True)
+    copied = shutil.which('wl-copy') is not None and subprocess.run(
+        ['wl-copy', url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    for w in share_warnings(s):
+        print('  ! ' + w)
+    print(f'{site_name}.test is shared at {url}' + ('  (link copied)' if copied else '')
+          + ('' if ready else '  (may need another minute to start working)'))
+    notify_user(f'{site_name}.test is shared', url + ('\nLink copied to the clipboard.' if copied else ''))
+    return url
+
+
+def unshare(name=None):
+    site_name, _ = find_site(name)
+    systemctl('stop', share_unit(site_name))
+    cfg = load_config()
+    if site_name in cfg.get('shared', []):
+        cfg['shared'].remove(site_name)
+        was_domain = cfg.get('share_mode', {}).pop(site_name, None) == 'domain'
+        save_config(cfg)
+        apply(quiet=True)
+        if was_domain:
+            restart_tunnel(cfg)
+    print(f'{site_name}.test is no longer shared')
+
+
+def share_status(site_map):
+    """Adds share info to each site; also forgets shares whose tunnel is gone (e.g. after a reboot)."""
+    active = active_shares()
+    for name, s in site_map.items():
+        on = name in active
+        s['share'] = {'on': on, 'url': share_url(name) if on else '', 'blocked': is_phpmyadmin(s['path']),
+                      'warnings': share_warnings(s) if on else [],
+                      'mode': load_config().get('share_mode', {}).get(name, '') if on else ''}
+    cfg = load_config()
+    stale = [n for n in cfg.get('shared', []) if n not in active]
+    if stale:
+        cfg['shared'] = [n for n in cfg['shared'] if n in active]
+        for n in stale:
+            cfg.get('share_mode', {}).pop(n, None)
+        save_config(cfg)
+        apply(quiet=True)
+
+
+# ------------------------------------------------------------------ node (managed by mise)
+NODE_INDEX = 'https://nodejs.org/dist/index.json'
+MISE_GLOBAL = HOME / '.config/mise/config.toml'
+NODE_FILES = ('.nvmrc', '.node-version')
+MISE_FILES = ('mise.local.toml', 'mise.toml', '.mise.toml', '.config/mise.toml', '.tool-versions')
+
+
+def nkey(v):
+    return tuple(int(x) for x in re.findall(r'\d+', str(v))[:3])
+
+
+def mise_bin():
+    b = shutil.which('mise') or str(HOME / '.local/bin/mise')
+    if not Path(b).exists():
+        die('mise is not installed (Omarchy normally ships it): sudo pacman -S mise')
+    return b
+
+
+def mise(*args, cwd=None):
+    return subprocess.run([mise_bin(), *args], capture_output=True, text=True, cwd=cwd or str(HOME))
+
+
+def mise_error(r, fallback):
+    lines = [l for l in (r.stderr or '').strip().splitlines() if l.strip()]
+    return lines[-1] if lines else fallback
+
+
+def node_installed():
+    """Installed Node versions, newest first."""
+    try:
+        data = json.loads(mise('ls', '--json', '--installed', 'node').stdout or '[]')
+    except ValueError:
+        data = []
+    return sorted({d['version'] for d in data if d.get('installed')}, key=nkey, reverse=True)
+
+
+def node_index(max_age=6 * 3600):
+    """Newest release of each Node major line: {'24': {'version': '24.11.0', 'lts': 'Krypton'}} (cached 6 h)."""
+    import time
+    cache = CACHE / 'node-index.json'
+    if max_age and cache.exists() and time.time() - cache.stat().st_mtime < max_age:
+        return json.loads(cache.read_text())
+    try:
+        with urllib.request.urlopen(urllib.request.Request(NODE_INDEX, headers=UA), timeout=10) as r:
+            data = json.loads(r.read().decode())
+    except Exception:
+        return json.loads(cache.read_text()) if cache.exists() else {}
+    found = {}
+    for d in data:
+        v = d['version'].lstrip('v')
+        m = v.split('.')[0]
+        if int(m) >= 16 and (m not in found or nkey(v) > nkey(found[m]['version'])):
+            found[m] = {'version': v, 'lts': d.get('lts') or ''}
+    CACHE.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(found))
+    return found
+
+
+def node_lines():
+    """What to offer for install: every LTS line from 18 up, plus the newest (current) line."""
+    idx = node_index()
+    if not idx:
+        return []
+    newest = max(idx, key=int)
+    keep = [m for m in idx if int(m) >= 18 and (idx[m]['lts'] or m == newest)]
+    return [{'major': m, 'version': idx[m]['version'], 'lts': idx[m]['lts']} for m in sorted(keep, key=int, reverse=True)]
+
+
+def toml_node(f):
+    """The node version a mise.toml / .tool-versions file asks for, if any."""
+    try:
+        if f.name == '.tool-versions':
+            for line in f.read_text().splitlines():
+                parts = line.split()
+                if len(parts) > 1 and parts[0] in ('node', 'nodejs'):
+                    return parts[1]
+            return None
+        import tomllib
+        v = tomllib.loads(f.read_text()).get('tools', {}).get('node')
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if isinstance(v, dict):
+            v = v.get('version')
+        return str(v) if v else None
+    except Exception:
+        return None
+
+
+def node_global_spec():
+    return toml_node(MISE_GLOBAL) if MISE_GLOBAL.exists() else None
+
+
+def node_nvmrc_enabled():
+    return 'node' in mise('settings', 'get', 'idiomatic_version_file_enable_tools').stdout
+
+
+def node_project_spec(path, nvmrc=True):
+    """(spec, file) pinning Node for this folder (searching upwards), or (None, None) = global."""
+    p = Path(path).expanduser().resolve()
+    for d in [p, *p.parents]:
+        if d == HOME or d == d.parent:
+            break
+        for name in MISE_FILES:
+            f = d / name
+            if f.is_file():
+                v = toml_node(f)
+                if v:
+                    return v, f
+        if nvmrc:
+            for name in NODE_FILES:
+                f = d / name
+                if f.is_file():
+                    first = (f.read_text().strip().splitlines() or [''])[0].strip()
+                    if first:
+                        return first, f
+    return None, None
+
+
+def node_resolve(spec, inst=None):
+    """Which installed version a spec ('24', 'lts/*', 'latest', '24.11.0') means, or None if not installed."""
+    inst = node_installed() if inst is None else inst
+    if not spec:
+        return None
+    s = str(spec).strip().lower().removeprefix('node@').lstrip('v')
+    if s in ('latest', 'node', 'current', 'stable'):
+        return inst[0] if inst else None
+    if s.startswith('lts'):
+        name = s.split('/', 1)[1] if '/' in s else '*'
+        idx = node_index()
+        majors = {m for m, d in idx.items() if d['lts'] and name in ('*', '', d['lts'].lower())}
+        found = [v for v in inst if v.split('.')[0] in majors]
+        return found[0] if found else None
+    if re.fullmatch(r'\d+(\.\d+){0,2}', s):
+        found = [v for v in inst if v == s or v.startswith(s + '.')]
+        return found[0] if found else None
+    return None
+
+
+def node_target(spec):
+    """'24' / 'lts' / 'latest' -> the exact newest version to install."""
+    s = str(spec).strip().lower().removeprefix('node@').lstrip('v')
+    idx = node_index()
+    if s in ('lts', 'lts/*'):
+        ms = [m for m, d in idx.items() if d['lts']]
+        return idx[max(ms, key=int)]['version'] if ms else 'lts'
+    if s in ('latest', 'current', 'node'):
+        return idx[max(idx, key=int)]['version'] if idx else 'latest'
+    if s in idx:
+        return idx[s]['version']
+    return s
+
+
+def node_install(spec):
+    exact = node_target(spec)
+    if exact in node_installed():
+        print(f'Node {exact} is already installed')
+        return exact
+    CACHE.mkdir(parents=True, exist_ok=True)
+    marker = CACHE / f"node-installing-{exact.split('.')[0]}"
+    marker.write_text(exact)
+    try:
+        print(f'Installing Node {exact}…', flush=True)
+        r = mise('install', f'node@{exact}')
+        if r.returncode:
+            die(mise_error(r, f'mise could not install Node {exact}'))
+    finally:
+        marker.unlink(missing_ok=True)
+    print(f'Node {exact} installed')
+    return exact
+
+
+def node_use(spec):
+    s = str(spec).strip().removeprefix('node@').lstrip('v')
+    r = mise('use', '-g', f'node@{s}')
+    if r.returncode:
+        die(mise_error(r, f'mise could not switch to Node {s}'))
+    print(f"Global Node is now {s} ({node_resolve(s) or 'installed'})")
+
+
+def node_isolate(spec, path=None):
+    d = Path(path or os.getcwd()).expanduser().resolve()
+    s = str(spec).strip().removeprefix('node@').lstrip('v')
+    if not node_nvmrc_enabled():
+        node_nvmrc(True)
+    for name in MISE_FILES:   # project already pins node in its own mise config: update that
+        f = d / name
+        if f.is_file() and toml_node(f) and name != '.tool-versions':
+            r = mise('use', '--path', str(f), f'node@{s}', cwd=str(d))
+            if r.returncode:
+                die(mise_error(r, 'mise failed'))
+            print(f'{d.name}: Node {s} (in {name})')
+            return
+    (d / '.nvmrc').write_text(s + '\n')
+    for name in ('.node-version',):
+        (d / name).unlink(missing_ok=True)
+    if not node_resolve(s):
+        node_install(s)
+    print(f'{d.name}: Node {s} (.nvmrc)')
+
+
+def node_unisolate(path=None):
+    d = Path(path or os.getcwd()).expanduser().resolve()
+    removed = False
+    for name in NODE_FILES:
+        if (d / name).exists():
+            (d / name).unlink()
+            removed = True
+    for name in MISE_FILES:
+        f = d / name
+        if f.is_file() and toml_node(f) and name != '.tool-versions':
+            mise('unuse', '--path', str(f), 'node', cwd=str(d))
+            removed = True
+    print(f'{d.name}: uses the global Node' if removed else f'{d.name} was not pinned')
+
+
+def node_uninstall(version):
+    v = str(version).strip().lstrip('v')
+    if v not in node_installed():
+        die(f'Node {v} is not installed (see: pxm node list)')
+    r = mise('uninstall', f'node@{v}')
+    if r.returncode:
+        die(mise_error(r, f'mise could not remove Node {v}'))
+    print(f'Removed Node {v}')
+
+
+def node_nvmrc(on):
+    if on and not node_nvmrc_enabled():
+        mise('settings', 'add', 'idiomatic_version_file_enable_tools', 'node')
+    elif not on and node_nvmrc_enabled():
+        cur = mise('settings', 'get', 'idiomatic_version_file_enable_tools').stdout
+        rest = [x for x in re.findall(r'[A-Za-z0-9_.-]+', cur) if x != 'node']
+        mise('settings', 'unset', 'idiomatic_version_file_enable_tools')
+        for x in rest:
+            mise('settings', 'add', 'idiomatic_version_file_enable_tools', x)
+    print('.nvmrc / .node-version files: ' + ('followed' if node_nvmrc_enabled() else 'ignored'))
+
+
+def node_status(site_map=None):
+    inst = node_installed()
+    spec = node_global_spec()
+    g = node_resolve(spec, inst) if spec else None
+    idx = node_index()
+    newest = {}
+    for v in inst:
+        newest.setdefault(v.split('.')[0], v)
+    nvmrc = node_nvmrc_enabled()
+    for s in (site_map or {}).values():
+        pspec, f = node_project_spec(s['path'], nvmrc)
+        s['node_pinned'] = bool(pspec)
+        s['node_spec'] = pspec or ''
+        s['node_file'] = f.name if f else ''
+        s['node'] = node_resolve(pspec, inst) if pspec else (g or '')
+        s['node_missing'] = bool(pspec) and not s['node']
+        s['node'] = s['node'] or ''
+    def update_for(v):
+        m = v.split('.')[0]
+        latest = idx.get(m, {}).get('version', '')
+        return latest if newest.get(m) == v and latest and nkey(latest) > nkey(v) else ''
+    return {
+        'available': bool(shutil.which('mise')),
+        'global_spec': spec or '',
+        'global': g or '',
+        'global_major': g.split('.')[0] if g else '',
+        'installed': [{'version': v, 'major': v.split('.')[0], 'lts': idx.get(v.split('.')[0], {}).get('lts', ''),
+                       'update': update_for(v)} for v in inst],
+        'majors': [{'major': m, 'version': v, 'lts': idx.get(m, {}).get('lts', '')}
+                   for m, v in sorted(newest.items(), key=lambda kv: int(kv[0]), reverse=True)],
+        'lines': [dict(l, installed=l['major'] in newest) for l in node_lines()],
+        'installing': sorted(p.name.removeprefix('node-installing-') for p in CACHE.glob('node-installing-*')) if CACHE.exists() else [],
+        'nvmrc': nvmrc,
+    }
+
+
+# ------------------------------------------------------------------ apps (editor, terminal, files, browser)
+# id, name, binaries, runs inside a terminal?
+APPS = {
+    'editor': [
+        ('zed', 'Zed', ['zeditor', 'zed'], False), ('code', 'VS Code', ['code'], False),
+        ('codium', 'VSCodium', ['codium'], False), ('cursor', 'Cursor', ['cursor'], False),
+        ('windsurf', 'Windsurf', ['windsurf'], False), ('phpstorm', 'PhpStorm', ['phpstorm', 'phpstorm.sh'], False),
+        ('sublime', 'Sublime Text', ['subl', 'sublime_text'], False), ('kate', 'Kate', ['kate'], False),
+        ('gnome-text-editor', 'Text Editor', ['gnome-text-editor'], False), ('emacs', 'Emacs', ['emacs'], False),
+        ('nvim', 'Neovim', ['nvim'], True), ('vim', 'Vim', ['vim'], True), ('helix', 'Helix', ['hx', 'helix'], True),
+        ('micro', 'Micro', ['micro'], True), ('nano', 'nano', ['nano'], True),
+    ],
+    'terminal': [
+        ('foot', 'Foot', ['foot'], False), ('alacritty', 'Alacritty', ['alacritty'], False),
+        ('ghostty', 'Ghostty', ['ghostty'], False), ('kitty', 'Kitty', ['kitty'], False),
+        ('wezterm', 'WezTerm', ['wezterm'], False), ('konsole', 'Konsole', ['konsole'], False),
+        ('gnome-terminal', 'GNOME Terminal', ['gnome-terminal'], False), ('ptyxis', 'Ptyxis', ['ptyxis'], False),
+        ('warp', 'Warp', ['warp-terminal'], False),
+    ],
+    'files': [
+        ('nautilus', 'Nautilus', ['nautilus'], False), ('thunar', 'Thunar', ['thunar'], False),
+        ('dolphin', 'Dolphin', ['dolphin'], False), ('nemo', 'Nemo', ['nemo'], False),
+        ('pcmanfm', 'PCManFM', ['pcmanfm-qt', 'pcmanfm'], False), ('yazi', 'Yazi', ['yazi'], True),
+        ('lf', 'lf', ['lf'], True), ('ranger', 'ranger', ['ranger'], True),
+    ],
+    'browser': [
+        ('chromium', 'Chromium', ['chromium'], False), ('chrome', 'Google Chrome', ['google-chrome-stable', 'google-chrome'], False),
+        ('brave', 'Brave', ['brave', 'brave-browser'], False), ('firefox', 'Firefox', ['firefox'], False),
+        ('zen', 'Zen', ['zen-browser', 'zen'], False), ('vivaldi', 'Vivaldi', ['vivaldi-stable', 'vivaldi'], False),
+        ('edge', 'Edge', ['microsoft-edge-stable'], False), ('helium', 'Helium', ['helium-browser', 'helium'], False),
+        ('librewolf', 'LibreWolf', ['librewolf'], False),
+    ],
+}
+APP_KINDS = {'editor': 'Editor', 'terminal': 'Terminal', 'files': 'File manager', 'browser': 'Browser'}
+EXTRA_PATH = os.pathsep.join([str(HOME / '.local/share/JetBrains/Toolbox/scripts'), '/var/lib/flatpak/exports/bin',
+                              str(HOME / '.local/share/flatpak/exports/bin')])
+
+
+def app_bin(binaries):
+    for b in binaries:
+        found = shutil.which(b) or shutil.which(b, path=EXTRA_PATH)
+        if found:
+            return found
+    return None
+
+
+def desktop_name(desktop_id):
+    for d in (HOME / '.local/share/applications', Path('/usr/share/applications')):
+        f = d / desktop_id
+        if f.exists():
+            for line in f.read_text(errors='replace').splitlines():
+                if line.startswith('Name='):
+                    return line[5:].strip()
+    return desktop_id.removesuffix('.desktop')
+
+
+def cmd_out(argv):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+
+
+def system_app(kind):
+    """What Omarchy currently uses: (matching APPS entry or None, display name)."""
+    if kind == 'editor':
+        cur = cmd_out(['omarchy-default-editor']) or 'nvim'
+    elif kind == 'terminal':
+        cur = cmd_out(['omarchy-default-terminal']) or 'xdg-terminal-exec'
+    elif kind == 'files':
+        did = cmd_out(['xdg-mime', 'query', 'default', 'inode/directory'])
+        cur = did.removesuffix('.desktop').split('.')[-1].lower() if did else ''
+    else:
+        did = cmd_out(['env', '-u', 'BROWSER', 'xdg-settings', 'get', 'default-web-browser'])
+        cur = did.removesuffix('.desktop').lower() if did else ''
+        cur = {'google-chrome': 'chrome', 'brave-browser': 'brave', 'microsoft-edge': 'edge'}.get(cur, cur)
+    for entry in APPS[kind]:
+        if cur == entry[0] or cur in entry[2]:
+            return entry, entry[1]
+    if kind == 'files' and did:
+        return None, desktop_name(did)
+    if kind == 'browser' and did:
+        return None, desktop_name(did)
+    return None, cur or 'system'
+
+
+def prefs(cfg=None):
+    cfg = cfg or load_config()
+    chosen = cfg.get('apps', {})
+    out = {}
+    for kind, label in APP_KINDS.items():
+        _, sys_name = system_app(kind)
+        opts = [{'value': 'system', 'label': f'System default ({sys_name})'}]
+        for i, name, bins, tui in APPS[kind]:
+            if app_bin(bins):
+                opts.append({'value': i, 'label': name + (' (in terminal)' if tui else '')})
+        opts.append({'value': 'custom', 'label': 'Custom command…'})
+        value = chosen.get(kind, 'system')
+        if value not in [o['value'] for o in opts]:
+            opts.insert(1, {'value': value, 'label': value + ' (not found)'})
+        out[kind] = {'label': label, 'value': value, 'custom': chosen.get(kind + '_custom', ''), 'options': opts}
+    return out
+
+
+def set_pref(kind, value, custom=None):
+    if kind not in APP_KINDS:
+        die(f"unknown app type '{kind}' (use: {', '.join(APP_KINDS)})")
+    ids = ['system', 'custom'] + [e[0] for e in APPS[kind]]
+    if value not in ids:
+        die(f"unknown {kind} '{value}' (choose: {', '.join(ids)})")
+    cfg = load_config()
+    apps = cfg.setdefault('apps', {})
+    apps[kind] = value
+    if custom is not None:
+        apps[kind + '_custom'] = custom
+    if value == 'custom' and not apps.get(kind + '_custom'):
+        print(f"Now set the command: pxm prefs set {kind} custom '<command> {{path}}'")
+    save_config(cfg)
+    names = {e[0]: e[1] for e in APPS[kind]}
+    print(f"{APP_KINDS[kind]}: " + ('system default' if value == 'system' else names.get(value, 'custom command')))
+
+
+def spawn(argv, cwd=None):
+    """Start an app fully detached, in its own systemd scope (survives bar restarts)."""
+    launcher = ['setsid', 'uwsm-app', '--'] if shutil.which('uwsm-app') else ['setsid']
+    try:
+        subprocess.Popen(launcher + list(argv), cwd=cwd or str(HOME), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        notify_user('pxm could not open the app', str(e))
+        die(str(e))
+
+
+def custom_argv(template, path):
+    parts = shlex.split(template)
+    if not parts:
+        die('the custom command is empty')
+    if not any('{path}' in x for x in parts):
+        parts.append('{path}')
+    argv = [x.replace('{path}', path) for x in parts]
+    if not shutil.which(argv[0]) and not Path(argv[0]).exists():
+        notify_user('pxm: command not found', argv[0])
+        die(f'command not found: {argv[0]}')
+    return argv
+
+
+def pick(kind):
+    """The app pxm should use: ('system'|'custom'|entry, binary or template)."""
+    apps = load_config().get('apps', {})
+    value = apps.get(kind, 'system')
+    if value == 'custom':
+        return 'custom', apps.get(kind + '_custom', '')
+    for entry in APPS[kind]:
+        if entry[0] == value:
+            b = app_bin(entry[2])
+            if b:
+                return entry, b
+    return 'system', None
+
+
+def terminal_argv(cwd, cmd=None):
+    choice, b = pick('terminal')
+    if choice == 'custom' and b:
+        argv = custom_argv(b, cwd)
+        return argv + (['-e'] + cmd if cmd else [])
+    if choice in ('system', 'custom'):
+        entry, _ = system_app('terminal')
+        b = app_bin(entry[2]) if entry else None
+        if not b:
+            return ['xdg-terminal-exec', f'--dir={cwd}'] + (['-e'] + cmd if cmd else [])
+        choice = entry
+    tid = choice[0]
+    if tid == 'foot':
+        return [b, f'--working-directory={cwd}'] + (cmd or [])
+    if tid in ('alacritty', 'konsole'):
+        return [b, '--working-directory' if tid == 'alacritty' else '--workdir', cwd] + (['-e'] + cmd if cmd else [])
+    if tid == 'ghostty':
+        return [b, f'--working-directory={cwd}'] + (['-e'] + cmd if cmd else [])
+    if tid == 'kitty':
+        return [b, '--directory', cwd] + (cmd or [])
+    if tid == 'wezterm':
+        return [b, 'start', '--cwd', cwd] + (['--'] + cmd if cmd else [])
+    if tid == 'gnome-terminal':
+        return [b, f'--working-directory={cwd}'] + (['--'] + cmd if cmd else [])
+    if tid == 'ptyxis':
+        return [b, '--new-window', '-d', cwd] + (['--'] + cmd if cmd else [])
+    if tid == 'warp' and cmd:   # Warp can't run a command on start; use the system terminal for that
+        return ['xdg-terminal-exec', f'--dir={cwd}', '-e'] + cmd
+    return [b]
+
+
+def open_terminal(path=None, cmd=None):
+    cwd = str(Path(path or os.getcwd()).expanduser().resolve())
+    spawn(terminal_argv(cwd, cmd), cwd)
+
+
+def open_editor(path=None):
+    target = Path(path or os.getcwd()).expanduser().resolve()
+    cwd = str(target if target.is_dir() else target.parent)
+    arg = '.' if target.is_dir() else str(target)
+    choice, b = pick('editor')
+    if choice == 'custom' and b:
+        return spawn(custom_argv(b, str(target)), cwd)
+    if choice in ('system', 'custom'):
+        entry, _ = system_app('editor')
+        b = app_bin(entry[2]) if entry else None
+        if not b:
+            return spawn(['omarchy-launch-editor', str(target)], cwd)
+        choice = entry
+    if choice[3]:
+        return spawn(terminal_argv(cwd, [b, arg]), cwd)
+    spawn([b, str(target)], cwd)
+
+
+def open_files(path=None):
+    target = str(Path(path or os.getcwd()).expanduser().resolve())
+    choice, b = pick('files')
+    if choice == 'custom' and b:
+        return spawn(custom_argv(b, target), target)
+    if choice == 'system':
+        return spawn(['xdg-open', target], target)
+    if choice[3]:
+        return spawn(terminal_argv(target, [b, target]), target)
+    spawn([b, target], target)
+
+
+def open_url(url):
+    choice, b = pick('browser')
+    if choice == 'custom' and b:
+        return spawn(custom_argv(b, url))
+    if choice == 'system':
+        return spawn(['omarchy-launch-browser', url] if shutil.which('omarchy-launch-browser') else ['xdg-open', url])
+    spawn([b, url])
+
+
+# ------------------------------------------------------------------ info, logs, mail, ui
+def php_info():
+    out = []
+    for name in (['system'] if Path(SYSTEM_PHP).exists() else []) + list(installed()):
+        if name == 'system':
+            binary, ini, kind, version, label = SYSTEM_PHP, '/etc/php/php.ini', 'system', full_version('system'), 'system'
+        else:
+            binary, ini, kind, version, label = str(PHPS / name / 'bin/php'), str(PHPS / name / 'etc/php.ini'), build_kind(name), name, minor(name)
+            link = PHPS / minor(name)
+            if not (link.is_symlink() and os.readlink(link) == name):
+                label = minor(name) + ' (older)'
+        env = dict(os.environ)
+        if name != 'system':
+            env.update(PHPRC=str(PHPS / name / 'etc'), PHP_INI_SCAN_DIR=str(PHPS / name / 'etc/conf.d'))
+        mods = subprocess.run([binary, '-m'], capture_output=True, text=True, env=env).stdout
+        exts = sorted({l.strip() for l in mods.splitlines() if l.strip() and not l.startswith('[')}, key=str.lower)
+        out.append({'name': name, 'label': label, 'version': version, 'kind': kind, 'ini': ini, 'extensions': exts,
+                    'active_minor': label == minor(name) or name == 'system'})
+    return out
+
+
+def logs(name=None, lines=80):
+    site_name, s = find_site(name)
+    files = []
+    lv = Path(s['path']) / 'storage/logs/laravel.log'
+    if lv.exists():
+        files.append(('Laravel log', lv))
+    files.append((f"PHP {s['php']} errors", LOGS / f"php-{s['php']}.log"))
+    files.append((f"PHP-FPM {s['php']}", LOGS / f"php-{s['php']}-fpm.log"))
+    out = []
+    for label, path in files:
+        text = ''
+        if path.exists():
+            with open(path, 'rb') as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 64 * 1024))
+                text = '\n'.join(f.read().decode(errors='replace').splitlines()[-lines:])
+        out.append({'label': label, 'path': str(path), 'exists': path.exists(), 'text': text or '(empty)'})
+    return {'site': site_name, 'files': out}
+
+
+def mail_test(to='you@example.test'):
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg['From'] = 'pxm <pxm@localhost>'
+    msg['To'] = to
+    msg['Subject'] = 'pxm test email: Mailpit is working'
+    msg.set_content('If you can read this in Mailpit (http://localhost:8025), your local SMTP server works.\n\n'
+                    'Laravel .env:\n' + SERVICE_INFO['mailpit']['env'].replace('\\n', '\n') + '\n')
+    try:
+        with smtplib.SMTP('127.0.0.1', 1025, timeout=5) as s:
+            s.send_message(msg)
+    except OSError as e:
+        die(f'Mailpit is not reachable on 127.0.0.1:1025 ({e}). Is it running? pxm service start mailpit')
+    print('Test email sent. Open http://localhost:8025 to see it.')
+
+
+def ui(section='sites'):
+    payload = json.dumps({'section': section})
+    r = subprocess.run(['omarchy-shell', 'shell', 'summon', 'pxm', payload], capture_output=True, text=True)
+    if r.returncode:
+        die(r.stderr.strip() or 'could not open the pxm window')
+
+# ------------------------------------------------------------------ setup / doctor / uninstall
+PACKAGES = ['caddy', 'dnsmasq', 'nss', 'cloudflared', 'php', 'php-fpm', 'composer']
+DNS_IP = '127.0.0.2'              # dnsmasq answers here, and only for *.test
+DNS_LINK = 'pxmdns'               # dummy link that tells systemd-resolved to send *.test lookups to dnsmasq
+ETC_DIR = Path('/etc/pxm')
+SYSTEM_UNIT_DIR = Path('/etc/systemd/system')
+NM_CONF = Path('/etc/NetworkManager/conf.d/50-pxm-unmanaged.conf')
+SYSCTL_CONF = Path('/etc/sysctl.d/50-pxm-web-ports.conf')
+USER_UNIT_DIR = HOME / '.config/systemd/user'
+USER_UNITS = ['pxm-caddy.service', 'pxm-fpm@.service', 'pxm-sites.path', 'pxm-sites.service']
+SHELL_RCS = [HOME / '.bashrc', HOME / '.zshrc']
+HYPR_CONF = HOME / '.config/hypr/hyprland.lua'
+BLOCK_BEGIN = '>>> pxm (managed by pxm setup, removed by pxm uninstall) >>>'
+BLOCK_END = '<<< pxm <<<'
+
+DNSMASQ_CONF = f"""# pxm: answer every *.test name with this machine.
+# Only *.test lookups are sent here (see pxm-dns-route.service).
+listen-address={DNS_IP}
+bind-interfaces
+port=53
+no-resolv
+no-hosts
+address=/test/127.0.0.1
+address=/test/::1
+"""
+
+DNS_UNIT = f"""[Unit]
+Description=pxm: resolve *.test to this machine
+After=network.target
+Before=nss-lookup.target
+
+[Service]
+ExecStart=/usr/bin/dnsmasq --keep-in-foreground --conf-file={ETC_DIR}/dnsmasq.conf --user=dnsmasq --group=dnsmasq --pid-file=
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# systemd-resolved sends a lookup to the DNS server of the link whose search domain matches, so a dummy link
+# with domain ~test routes *.test (and nothing else) to dnsmasq. This works even when NetworkManager forces a
+# global DNS server, which ignores per-connection DNS settings.
+DNS_ROUTE_UNIT = f"""[Unit]
+Description=pxm: route only *.test lookups to pxm-dns
+After=systemd-resolved.service pxm-dns.service NetworkManager.service
+Wants=pxm-dns.service
+PartOf=systemd-resolved.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/bin/ip link add {DNS_LINK} type dummy
+ExecStart=/usr/bin/ip addr replace 192.0.2.53/32 dev {DNS_LINK}
+ExecStart=/usr/bin/ip link set {DNS_LINK} up
+ExecStart=/usr/bin/resolvectl dns {DNS_LINK} {DNS_IP}
+ExecStart=/usr/bin/resolvectl domain {DNS_LINK} ~test
+ExecStart=/usr/bin/resolvectl default-route {DNS_LINK} false
+ExecStart=/usr/bin/resolvectl dnsovertls {DNS_LINK} no
+ExecStop=-/usr/bin/ip link del {DNS_LINK}
+
+[Install]
+WantedBy=multi-user.target systemd-resolved.service
+"""
+
+NM_UNMANAGED = f"""# pxm: the {DNS_LINK} dummy link is managed by pxm-dns-route.service, not NetworkManager
+[keyfile]
+unmanaged-devices=interface-name:{DNS_LINK}
+"""
+
+SYSCTL_PORTS = """# pxm: let the web server (running as you, not root) use ports 80 and 443
+net.ipv4.ip_unprivileged_port_start = 80
+"""
+
+
+def user_units(cfg):
+    return {
+        'pxm-caddy.service': """[Unit]
+Description=pxm: web server for *.test sites (Caddy)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/caddy run --config %h/.config/pxm/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config %h/.config/pxm/Caddyfile --adapter caddyfile --force
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+""",
+        'pxm-fpm@.service': """[Unit]
+Description=pxm: PHP-FPM %i for *.test sites
+PartOf=pxm-caddy.service
+
+[Service]
+RuntimeDirectory=pxm-fpm-%i
+Environment=PHP_INI_SCAN_DIR=%h/.local/share/pxm/php/%i/etc/conf.d
+ExecStart=%h/.local/share/pxm/php/%i/bin/php-fpm --nodaemonize -y %h/.local/share/pxm/php/%i/etc/php-fpm.conf -c %h/.local/share/pxm/php/%i/etc/php.ini
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+""",
+        'pxm-sites.path': f"""[Unit]
+Description=pxm: notice new or removed folders in the sites folder
+
+[Path]
+PathChanged={cfg['sites_dir']}
+Unit=pxm-sites.service
+
+[Install]
+WantedBy=default.target
+""",
+        'pxm-sites.service': f"""[Unit]
+Description=pxm: refresh *.test sites
+
+[Service]
+Type=oneshot
+ExecStart={LINK} apply --quiet
+""",
+    }
+
+
+def step(msg):
+    print(f'\n\033[1m== {msg}\033[0m', flush=True)
+
+
+def ok(msg):
+    print(f'   ✓ {msg}', flush=True)
+
+
+def warn(msg):
+    print(f'   ! {msg}', flush=True)
+
+
+def ask(question, default=''):
+    if not sys.stdin.isatty():
+        return default
+    try:
+        answer = input(f'{question} [{default}]: ' if default else f'{question}: ').strip()
+    except EOFError:
+        return default
+    return answer or default
+
+
+def default_sites_dir():
+    return str(HOME / 'Work/sites') if (HOME / 'Work').is_dir() else str(HOME / 'Sites')
+
+
+def is_ready(cfg=None):
+    cfg = cfg or load_config()
+    return bool(cfg.get('sites_dir')) and (USER_UNIT_DIR / 'pxm-caddy.service').exists()
+
+
+def upsert_block(path, comment, lines, before=None):
+    """Write `lines` between pxm's marker comments in a config file (replacing an older block).
+    A new block goes above the line `before` if the file has it, else at the end."""
+    text = path.read_text() if path.exists() else ''
+    begin, end = f'{comment} {BLOCK_BEGIN}', f'{comment} {BLOCK_END}'
+    block = '\n'.join([begin, *lines, end])
+    if begin in text and end in text:
+        text = text[:text.index(begin)] + block + text[text.index(end) + len(end):]
+    elif before and before in text.splitlines():
+        lines = text.splitlines(keepends=True)
+        i = [l.rstrip('\n') for l in lines].index(before)
+        while i > 0 and lines[i - 1].startswith('#'):    # keep the comment that explains that line with it
+            i -= 1
+        text = ''.join(lines[:i]) + block + '\n\n' + ''.join(lines[i:])
+    else:
+        text = text.rstrip('\n') + ('\n\n' if text.strip() else '') + block + '\n'
+    path.write_text(text)
+
+
+def remove_block(path, comment):
+    if not path.exists():
+        return False
+    text = path.read_text()
+    begin, end = f'{comment} {BLOCK_BEGIN}', f'{comment} {BLOCK_END}'
+    if begin not in text or end not in text:
+        return False
+    before, after = text[:text.index(begin)].rstrip('\n'), text[text.index(end) + len(end):].lstrip('\n')
+    if before and after:
+        text = before + '\n\n' + after
+    else:
+        text = (before + '\n' if before else '') + after
+    path.write_text(text)
+    return True
+
+
+def omarchy_plugin_enabled():
+    try:
+        plugins = json.loads(cmd_out(['omarchy', 'plugin', 'list', '--json']) or '[]')
+    except ValueError:
+        return None
+    return any(x.get('id') == PLUGIN_ID and x.get('enabled') for x in plugins)
+
+
+def run_root(action):
+    """The parts that need admin rights run in one go, behind one password prompt."""
+    r = subprocess.run(['pkexec', '/usr/bin/python3', str(SELF), '_root', action])
+    if r.returncode == 126 or r.returncode == 127:
+        die('the password prompt was cancelled; nothing was changed. Run it again when ready.')
+    if r.returncode:
+        die(f'the admin step failed (exit {r.returncode}); see the messages above')
+
+
+def root_main(action):
+    """Runs as root (via pkexec) for the user in PKEXEC_UID."""
+    import pwd
+    if os.geteuid() != 0 or 'PKEXEC_UID' not in os.environ:
+        die('this part runs through pkexec; use: pxm setup')
+    user = pwd.getpwuid(int(os.environ['PKEXEC_UID']))
+    home = Path(user.pw_dir)
+    ca_root = home / '.local/share/caddy/pki/authorities/local/root.crt'
+
+    def sh(*argv, check=True, quiet=False):
+        r = subprocess.run(argv, capture_output=quiet, text=True)
+        if check and r.returncode:
+            die(f"failed: {' '.join(argv)}")
+        return r
+
+    if action == 'setup':
+        print('   Installing packages (skips the ones you already have)…', flush=True)
+        sh('pacman', '-S', '--needed', '--noconfirm', *PACKAGES)
+        ETC_DIR.mkdir(exist_ok=True)
+        (ETC_DIR / 'dnsmasq.conf').write_text(DNSMASQ_CONF)
+        (SYSTEM_UNIT_DIR / 'pxm-dns.service').write_text(DNS_UNIT)
+        (SYSTEM_UNIT_DIR / 'pxm-dns-route.service').write_text(DNS_ROUTE_UNIT)
+        if NM_CONF.parent.is_dir():
+            NM_CONF.write_text(NM_UNMANAGED)
+            sh('nmcli', 'general', 'reload', 'conf', check=False, quiet=True)
+        SYSCTL_CONF.write_text(SYSCTL_PORTS)
+        sh('sysctl', '-q', '-p', str(SYSCTL_CONF))
+        sh('systemctl', 'daemon-reload')
+        sh('systemctl', 'enable', '--now', 'pxm-dns.service')
+        sh('systemctl', 'enable', 'pxm-dns-route.service', quiet=True)
+        sh('systemctl', 'restart', 'pxm-dns-route.service')
+        print('   ✓ *.test addresses point to this computer', flush=True)
+        if not ca_root.exists():
+            # Caddy makes its local certificate authority the first time it runs; run it briefly as the user
+            import time
+            tmp = Path(tempfile.mkdtemp(prefix='pxm-ca-'))
+            (tmp / 'Caddyfile').write_text('{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n}\n')
+            os.chmod(tmp, 0o755)
+            os.chmod(tmp / 'Caddyfile', 0o644)
+            proc = subprocess.Popen(['runuser', '-u', user.pw_name, '--', 'env', f'HOME={home}',
+                                     f'XDG_DATA_HOME={home}/.local/share', f'XDG_CONFIG_HOME={home}/.config',
+                                     '/usr/bin/caddy', 'run', '--config', str(tmp / 'Caddyfile'), '--adapter', 'caddyfile'],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(60):
+                if ca_root.exists():
+                    break
+                time.sleep(0.25)
+            proc.terminate()
+            proc.wait()
+            shutil.rmtree(tmp, ignore_errors=True)
+        if not ca_root.exists():
+            die('Caddy did not create its HTTPS certificate')
+        sh('install', '-m', '644', str(ca_root), CA_ANCHOR)
+        sh('trust', 'extract-compat')
+        print('   ✓ HTTPS certificate trusted system-wide', flush=True)
+    elif action == 'uninstall':
+        sh('systemctl', 'disable', '--now', 'pxm-dns-route.service', 'pxm-dns.service', check=False, quiet=True)
+        for f in (SYSTEM_UNIT_DIR / 'pxm-dns.service', SYSTEM_UNIT_DIR / 'pxm-dns-route.service',
+                  NM_CONF, SYSCTL_CONF, Path(CA_ANCHOR)):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(ETC_DIR, ignore_errors=True)
+        sh('ip', 'link', 'del', DNS_LINK, check=False, quiet=True)
+        sh('systemctl', 'daemon-reload')
+        if NM_CONF.parent.is_dir():
+            sh('nmcli', 'general', 'reload', 'conf', check=False, quiet=True)
+        sh('sysctl', '-q', '-w', 'net.ipv4.ip_unprivileged_port_start=1024', check=False)
+        sh('trust', 'extract-compat', check=False)
+        sh('resolvectl', 'flush-caches', check=False, quiet=True)
+        print('   ✓ removed the *.test DNS, port and certificate settings', flush=True)
+    else:
+        die(f'unknown admin action {action!r}')
+
+
+def setup(sites_dir=None):
+    print(f'pxm {version()} setup')
+    if not shutil.which('pacman'):
+        die('pxm needs Arch Linux (Omarchy)')
+    if systemctl('show-environment').returncode:
+        die('systemd user services are not available')
+    if subprocess.run(['systemctl', 'is-active', '--quiet', 'systemd-resolved']).returncode:
+        die('pxm needs systemd-resolved (Omarchy uses it by default) for the *.test addresses')
+
+    cfg = load_config()
+    chosen = sites_dir or cfg.get('sites_dir') or ''
+    if not chosen:
+        print('\nEvery folder in your sites folder becomes https://<folder>.test')
+        chosen = ask('Sites folder', default_sites_dir().replace(str(HOME), '~'))
+    sd = Path(os.path.expanduser(chosen)).resolve()
+    sd.mkdir(parents=True, exist_ok=True)
+    cfg['sites_dir'] = str(sd)
+    save_config(cfg)
+
+    step('System settings (asks for your password once)')
+    run_root('setup')
+
+    step('Web server and PHP')
+    USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    for name, text in user_units(cfg).items():
+        (USER_UNIT_DIR / name).write_text(text)
+    systemctl('daemon-reload')
+    LINK.parent.mkdir(parents=True, exist_ok=True)
+    if LINK.is_symlink() or not LINK.exists():
+        LINK.unlink(missing_ok=True)
+        LINK.symlink_to(SELF)
+        ok(f'`pxm` command: {str(LINK).replace(str(HOME), "~")}')
+    else:
+        warn(f'{LINK} exists and is not pxm; leaving it alone')
+    write_shim()
+    for rc in SHELL_RCS:
+        if rc.exists() or rc.name == '.bashrc':
+            # above Omarchy's "interactive shells only" line, so scripts and editors get the right php too
+            upsert_block(rc, '#', ['# php = the PHP version pxm picks for the folder you are in; composer global tools',
+                                   'export PATH="$HOME/.local/share/pxm/bin:$HOME/.config/composer/vendor/bin:$PATH"'],
+                         before='[[ $- != *i* ]] && return')
+    ok('`php` follows pxm (in new terminals)')
+    for full, d in installed().items():          # keep each version's FPM settings in step with this pxm
+        write_version_config(d, full)
+    if not installed():
+        avail = available(max_age=0)
+        latest = max(avail, key=vkey) if avail else None
+        if latest:
+            try:
+                install(latest)
+            except SystemExit:
+                warn('could not download PHP right now; install one later: pxm php install 8.5')
+        else:
+            warn('could not reach the PHP download server; install one later: pxm php install 8.5')
+    elif not GLOBAL_FILE.exists():
+        use(minor(list(installed())[-1]))
+    apply(quiet=True)
+    import time
+    for _ in range(40):
+        if systemctl('is-active', 'pxm-caddy.service').stdout.strip() == 'active':
+            break
+        time.sleep(0.25)
+    if systemctl('is-active', 'pxm-caddy.service').stdout.strip() == 'active':
+        ok('web server running')
+    else:
+        warn('the web server did not start: journalctl --user -u pxm-caddy')
+    if trust_nss():
+        ok('HTTPS certificate trusted in Chromium-based browsers')
+
+    step('Composer and the Laravel installer')
+    if shutil.which('laravel') or (HOME / '.config/composer/vendor/bin/laravel').exists():
+        ok('already installed')
+    elif shutil.which('composer'):
+        env = dict(os.environ, PATH=f'{SHIMS}:{os.environ.get("PATH", "")}')
+        r = subprocess.run(['composer', 'global', 'require', '--quiet', 'laravel/installer'], env=env)
+        ok('installed `laravel`') if r.returncode == 0 else warn('could not install it: composer global require laravel/installer')
+
+    step('Omarchy')
+    if HYPR_CONF.exists():
+        upsert_block(HYPR_CONF, '--', [
+            '-- the pxm window floats like an app window, fully opaque',
+            'o.window({ class = "^org.quickshell$", title = "^pxm$" }, { float = true, center = true, '
+            'size = { 1000, 680 }, tag = "-default-opacity", opacity = "1.0 1.0" })'])
+        subprocess.run(['hyprctl', 'reload'], capture_output=True)
+        ok('window rule added to ~/.config/hypr/hyprland.lua')
+    enabled = omarchy_plugin_enabled()
+    plugins = HOME / '.config/omarchy/plugins'
+    installed_as_plugin = plugins.is_dir() and any(d.resolve() == PLUGIN_DIR for d in plugins.iterdir())
+    if enabled is False and installed_as_plugin:
+        r = subprocess.run(['omarchy', 'plugin', 'enable', PLUGIN_ID], capture_output=True, text=True)
+        ok('bar icon enabled') if r.returncode == 0 else warn('enable the bar icon with: omarchy plugin enable pxm')
+    elif enabled:
+        ok('bar icon enabled')
+
+    step('Check')
+    problems = [c for c in doctor_checks() if not c[1]]
+    for label, _, fix in problems:
+        warn(f'{label}: {fix}')
+    if not problems:
+        ok('everything is in place')
+    g = global_version()
+    print(f"""
+pxm is ready.
+  Sites folder:  {str(sd).replace(str(HOME), '~')}  (every folder in it is https://<folder>.test)
+  Global PHP:    {full_version(g) or g}
+  Open a new terminal so `php` uses pxm, then click the snake in the bar or run: pxm ui""")
+
+
+def doctor_checks():
+    """[(what, ok, how to fix)]"""
+    cfg = load_config()
+    fix_setup = 'run pxm setup'
+    out = []
+    missing = [p for p in PACKAGES if subprocess.run(['pacman', '-Q', p], capture_output=True).returncode]
+    out.append(('packages', not missing, f"missing {', '.join(missing)}: {fix_setup}"))
+    out.append(('sites folder', bool(cfg.get('sites_dir')) and Path(cfg.get('sites_dir') or '/nonexistent').is_dir(), fix_setup))
+    dns = subprocess.run(['getent', 'hosts', 'pxm-check.test'], capture_output=True, text=True).stdout
+    out.append(('*.test addresses', '127.0.0.1' in dns or '::1' in dns, 'sudo systemctl restart pxm-dns pxm-dns-route'))
+    port = cmd_out(['sysctl', '-n', 'net.ipv4.ip_unprivileged_port_start'])
+    out.append(('ports 80/443', port.isdigit() and int(port) <= 80, fix_setup))
+    out.append(('web server', cfg.get('web_stopped') or systemctl('is-active', 'pxm-caddy.service').stdout.strip() == 'active',
+                'pxm service start web'))
+    out.append(('HTTPS certificate', CA_ROOT.exists() and Path(CA_ANCHOR).exists(), 'pxm trust'))
+    out.append(('`pxm` command', LINK.is_symlink() and LINK.resolve() == SELF, fix_setup))
+    out.append(('`php` follows pxm', any(BLOCK_BEGIN in rc.read_text() for rc in SHELL_RCS if rc.exists()), fix_setup))
+    has_php = global_version() == 'system' and has_system_php() or (PHPS / global_version()).exists()
+    out.append(('a global PHP', has_php, 'pxm php install 8.5'))
+    if shutil.which('omarchy'):
+        out.append(('bar icon', omarchy_plugin_enabled() is not False, 'omarchy plugin enable pxm'))
+    return out
+
+
+def doctor():
+    if not is_ready():
+        die('pxm is not set up yet. Run: pxm setup')
+    bad = 0
+    for label, good, fix in doctor_checks():
+        print(f"  {'✓' if good else '✗'} {label}" + ('' if good else f'  →  {fix}'))
+        bad += not good
+    if bad:
+        sys.exit(1)
+
+
+def uninstall(purge=False, assume_yes=False):
+    cfg = load_config()
+    print('This removes what pxm setup changed: the *.test addresses, the web server, the HTTPS certificate,')
+    print('the port setting, the shell PATH line and the window rule. Your sites and Docker databases are kept.')
+    if purge:
+        print('--purge: your PHP versions and pxm settings are deleted too.')
+    if not assume_yes and ask('Continue? (y/N)', 'n').lower() not in ('y', 'yes'):
+        print('Nothing changed.')
+        return
+
+    step('Sharing and web server')
+    for name in cfg.get('shared', []):
+        systemctl('stop', share_unit(name))
+    systemctl('stop', TUNNEL_UNIT)
+    running = re.findall(r'^(pxm-fpm@\S+\.service)', systemctl('list-units', '--plain', '--no-legend', '--all',
+                                                                 'pxm-fpm@*').stdout, re.M)
+    systemctl('disable', '--now', 'pxm-sites.path', 'pxm-caddy.service', *running)
+    for name in USER_UNITS:
+        (USER_UNIT_DIR / name).unlink(missing_ok=True)
+    systemctl('daemon-reload')
+    systemctl('reset-failed')
+    ok('stopped and removed')
+
+    step('System settings (asks for your password once)')
+    run_root('uninstall')
+
+    step('Your account')
+    if shutil.which('certutil'):
+        subprocess.run(['certutil', '-D', '-d', f'sql:{NSSDB}', '-n', CA_NAME], capture_output=True)
+    for rc in SHELL_RCS:
+        remove_block(rc, '#')
+    if remove_block(HYPR_CONF, '--'):
+        subprocess.run(['hyprctl', 'reload'], capture_output=True)
+    if LINK.is_symlink() and LINK.resolve() == SELF:
+        LINK.unlink()
+    if purge:
+        for d in (DATA, CONF_DIR, CACHE):
+            shutil.rmtree(d, ignore_errors=True)
+        ok('PHP versions and settings deleted')
+    else:
+        cfg = load_config()
+        cfg['shared'] = []
+        cfg.pop('share_mode', None)
+        save_config(cfg)
+        ok('PHP versions and settings kept in ~/.local/share/pxm and ~/.config/pxm (pxm setup picks them up again)')
+    ok('PATH line, window rule and certificate removed')
+    tunnel = (cfg.get('tunnel') or {}).get('name')
+    print(f"""
+pxm is uninstalled.
+  - The bar icon and window are an Omarchy plugin: omarchy plugin remove pxm
+  - Packages were kept (other apps may use them): {' '.join(PACKAGES)}
+  - Docker containers (your databases) were kept: mysql8, postgres18, redis, mailpit""" + (f"""
+  - Your Cloudflare tunnel {tunnel} still exists: cloudflared tunnel delete {tunnel}""" if tunnel else ''))
+
+
+# ------------------------------------------------------------------ status
+def status():
+    cfg = load_config()
+    if not is_ready(cfg):
+        return {'ready': False, 'version': version(), 'pxm': str(SELF), 'sites': {}, 'services': [], 'installed': []}
+    g = global_version()
+    site_map = sites(cfg)
+    share_status(site_map)
+    return {
+        'ready': True,
+        'version': version(),
+        'global': g,
+        'global_full': full_version(g),
+        'installed': [{'version': v, 'minor': minor(v), 'kind': build_kind(v),
+                       'active': (PHPS / minor(v)).is_symlink() and os.readlink(PHPS / minor(v)) == v}
+                      for v in installed()],
+        'system': full_version('system') if has_system_php() else '',
+        'sites_dir': cfg['sites_dir'],
+        'sites': site_map,
+        'node': node_status(site_map),
+        'share_domain': cfg.get('share_domain') or '',
+        'caddy': systemctl('is-active', 'pxm-caddy.service').stdout.strip(),
+        'available': [{'minor': m, 'version': v, 'installed': v in installed()} for m, v in available().items()],
+        'prereleases': prereleases(),
+        'buildable': BUILDABLE_MINORS,
+        'building': building(),
+        'installing': sorted(p.name.removeprefix('installing-') for p in CACHE.glob('installing-*')) if CACHE.exists() else [],
+        'services': [{'id': i, 'name': n, 'port': port, 'url': url, 'up': port_open(port),
+                      **service_info(i, cfg)} for i, n, port, url, _ in SERVICES],
+        'docker': shutil.which('docker') is not None,
+        'trusted': (NSSDB / 'cert9.db').exists() and subprocess.run(
+            ['certutil', '-L', '-d', f'sql:{NSSDB}', '-n', CA_NAME], capture_output=True).returncode == 0,
+    }
+
+
+# ------------------------------------------------------------------ main
+def main(argv):
+    if not argv or argv[0] in ('-h', '--help', 'help'):
+        print(__doc__)
+        return
+    cmd, rest = argv[0], argv[1:]
+    if cmd in ('-v', '--version', 'version'):
+        print(f'pxm {version()}')
+        return
+    if cmd == '_root':
+        return root_main(rest[0] if rest else '')
+    if cmd == 'setup':
+        d = next((rest[i + 1] for i, a in enumerate(rest) if a == '--sites-dir' and i + 1 < len(rest)), None)
+        return setup(d)
+    if cmd == 'doctor':
+        return doctor()
+    if cmd == 'uninstall':
+        return uninstall(purge='--purge' in rest, assume_yes='--yes' in rest or '-y' in rest)
+    if cmd == 'status':
+        print(json.dumps(status(), indent=None if '--json' in rest else 2))
+        return
+    if not is_ready():
+        die('pxm is not set up yet. Run: pxm setup')
+    if cmd == 'php':
+        sub = rest[0] if rest else 'list'
+        arg = rest[1] if len(rest) > 1 else None
+        if sub == 'list':
+            g = global_version()
+            if Path(SYSTEM_PHP).exists():
+                print(f"  system   {full_version('system'):10} (Arch package)" + ('   * global' if g == 'system' else ''))
+            for v in installed():
+                m = minor(v)
+                current = (PHPS / m).is_symlink() and os.readlink(PHPS / m) == v
+                kind = 'full build' if build_kind(v) == 'full' else 'quick'
+                print(f"  {m:8} {v:12} {kind:10}" + ('  * global' if g == m and current else ('' if current else '  (older, not in use)')))
+        elif sub == 'available':
+            have = set(installed())
+            for m, v in available().items():
+                print(f"  {m:6} {v:10}" + ('  installed' if v in have else ''))
+        elif sub == 'install' and arg:
+            install(arg)
+        elif sub == 'build' and arg:
+            build(arg, foreground='--foreground' in rest)
+        elif sub in ('prereleases', 'pre'):
+            for p in prereleases(max_age=0):
+                print(f"  {p['version']:14} {p['date']}")
+        elif sub == 'use' and arg:
+            use(arg)
+        elif sub == 'isolate' and arg:
+            isolate(arg, rest[2] if len(rest) > 2 else None)
+        elif sub == 'unisolate':
+            unisolate(arg)
+        elif sub == 'uninstall' and arg:
+            uninstall(arg)
+        elif sub == 'info':
+            data = php_info()
+            if '--json' in rest:
+                print(json.dumps(data))
+            else:
+                for v in data:
+                    print(f"  {v['label']:14} {v['version']:12} {v['kind']:8} {len(v['extensions'])} extensions  ini: {v['ini']}")
+        elif sub == 'which':
+            v, root = project_version()
+            name = v or global_version()
+            src = f'pinned by {root}/.php-version' if v else 'global'
+            print(f'{php_binary(name)}  (PHP {full_version(name)}, {src})')
+        else:
+            die('unknown php command; see pxm --help')
+    elif cmd == 'sites':
+        all_sites = sites()
+        if not all_sites:
+            print(f"No sites yet. Put a project in {load_config()['sites_dir']} or run `pxm link` in a project folder.")
+        for n, s in all_sites.items():
+            flags = ('🔒 ' if s['secure'] else '   ') + ('linked' if s['source'] == 'linked' else 'parked')
+            print(f"  {s['url']:<32} PHP {s['php']:<7} {flags:<10} {s['path']}")
+    elif cmd == 'link':
+        link(rest[0] if rest else None)
+    elif cmd == 'unlink' and rest:
+        unlink(rest[0])
+    elif cmd in ('secure', 'unsecure'):
+        set_secure(rest[0] if rest else None, cmd == 'secure')
+    elif cmd == 'open':
+        if rest and re.match(r'^[a-z]+://', rest[0]):
+            open_url(rest[0])
+        else:
+            _, s = find_site(rest[0] if rest else None)
+            open_url(s['url'])
+    elif cmd == 'share' and rest[:1] == ['domain']:
+        if len(rest) < 2:
+            d = load_config().get('share_domain')
+            print(f'Shared sites get https://<site>.{d}' if d else 'No domain connected: shared sites get random *.trycloudflare.com links')
+        elif rest[1] == 'off':
+            share_domain_off()
+        else:
+            share_domain_setup(rest[1])
+    elif cmd == 'share':
+        args = [a for a in rest if not a.startswith('--')]
+        share(args[0] if args else None, quick='--quick' in rest)
+    elif cmd == 'unshare':
+        unshare(rest[0] if rest else None)
+    elif cmd == 'shares':
+        site_map = sites()
+        share_status(site_map)
+        on = {n: s['share'] for n, s in site_map.items() if s['share']['on']}
+        if not on:
+            print('Nothing is shared right now.')
+        for n, sh in on.items():
+            print(f"  {n}.test  →  {sh['url'] or '(starting…)'}")
+            for w in sh['warnings']:
+                print('     ! ' + w)
+    elif cmd == 'edit':
+        open_editor(rest[0] if rest else None)
+    elif cmd in ('term', 'terminal'):
+        path = rest[0] if rest and rest[0] != '--' else None
+        command = rest[rest.index('--') + 1:] if '--' in rest else None
+        open_terminal(path, command)
+    elif cmd == 'files':
+        open_files(rest[0] if rest else None)
+    elif cmd == 'prefs':
+        if rest[:1] == ['set'] and len(rest) >= 3:
+            set_pref(rest[1], rest[2], rest[3] if len(rest) > 3 else None)
+        elif '--json' in rest:
+            print(json.dumps(prefs()))
+        else:
+            for kind, p in prefs().items():
+                names = {o['value']: o['label'] for o in p['options']}
+                cur = names.get(p['value'], p['value']) + (f"  →  {p['custom']}" if p['value'] == 'custom' else '')
+                others = ', '.join(o['value'] for o in p['options'][1:-1]) or 'none'
+                print(f"  {kind:9} {cur}\n            installed: {others}")
+    elif cmd == 'apply':
+        apply(quiet='--quiet' in rest)
+    elif cmd == 'trust':
+        trust()
+    elif cmd == 'service':
+        sub = rest[0] if rest else 'list'
+        if sub == 'list':
+            for i, n, port, url, _ in SERVICES:
+                print(f"  {i:9} {n:20} {'running' if port_open(port) else 'stopped':8} :{port}")
+        elif sub in ('start', 'stop') and len(rest) > 1:
+            service(sub, rest[1])
+        else:
+            die('usage: pxm service list | start <name> | stop <name>')
+    elif cmd == 'node':
+        sub = rest[0] if rest else 'list'
+        arg = rest[1] if len(rest) > 1 else None
+        if sub == 'list':
+            g = node_resolve(node_global_spec())
+            inst = node_installed()
+            if not inst:
+                print('  no Node versions yet: pxm node install lts')
+            for v in inst:
+                print(f'  {v:12}' + ('  * global' if v == g else ''))
+        elif sub == 'available':
+            for l in node_lines():
+                print(f"  {l['major']:4} {l['version']:12} {('LTS ' + l['lts']) if l['lts'] else 'current'}")
+        elif sub == 'install' and arg:
+            node_install(arg)
+        elif sub == 'use' and arg:
+            node_use(arg)
+        elif sub == 'isolate' and arg:
+            node_isolate(arg, rest[2] if len(rest) > 2 else None)
+        elif sub == 'unisolate':
+            node_unisolate(arg)
+        elif sub == 'uninstall' and arg:
+            node_uninstall(arg)
+        elif sub == 'which':
+            spec, f = node_project_spec(arg or os.getcwd(), node_nvmrc_enabled())
+            v = node_resolve(spec) if spec else node_resolve(node_global_spec())
+            print(f"Node {v or (spec + ' (not installed: pxm node install ' + spec + ')')}" + (f'  (from {f})' if f else '  (global)'))
+        elif sub == 'nvmrc' and arg in ('on', 'off'):
+            node_nvmrc(arg == 'on')
+        else:
+            die('usage: pxm node list|available|install|use|isolate|unisolate|uninstall|which|nvmrc')
+    elif cmd == 'ui':
+        ui(rest[0] if rest else 'sites')
+    elif cmd == 'logs':
+        data = logs(rest[0] if rest and not rest[0].startswith('-') else None)
+        if '--json' in rest:
+            print(json.dumps(data))
+        else:
+            for f in data['files']:
+                print(f"== {f['label']} ({f['path']})\n{f['text']}\n")
+    elif cmd == 'mail' and rest[:1] == ['test']:
+        mail_test(rest[1] if len(rest) > 1 else 'you@example.test')
+    else:
+        die(f'unknown command {cmd!r}; see pxm --help')
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
