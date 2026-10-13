@@ -1855,7 +1855,7 @@ ExecStart={LINK} apply --quiet
 
 
 def step(msg):
-    print(f'\n\033[1m== {msg}\033[0m', flush=True)
+    print(f'\n\033[1m== {msg}\033[0m' if sys.stdout.isatty() else f'\n== {msg}', flush=True)
 
 
 def ok(msg):
