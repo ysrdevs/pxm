@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/omarchy/omarchy/main/schemas/plugin.json",
+  "schemaVersion": 1,
+  "id": "pxm",
+  "name": "pxm",
+  "version": "0.1.0",
+  "author": "ysrdevs",
+  "authorUrl": "https://github.com/ysrdevs",
+  "license": "MIT",
+  "homepage": "https://github.com/ysrdevs/pxm",
+  "repository": "https://github.com/ysrdevs/pxm",
+  "description": "Local PHP development for Omarchy, in the spirit of Laravel Herd: PHP and Node versions, *.test sites with HTTPS, public share links, databases and mail.",
+  "kinds": ["bar-widget", "panel"],
+  "entryPoints": {
+    "barWidget": "Panel.qml",
+    "panel": "Window.qml"
+  },
+  "barWidget": {
+    "displayName": "pxm",
+    "description": "PHP and Node versions, your .test sites, sharing and dev services.",
+    "category": "Development",
+    "aliases": ["php", "herd", "laravel"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
