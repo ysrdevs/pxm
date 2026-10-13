@@ -4,8 +4,35 @@ Local PHP development for [Omarchy](https://omarchy.org), in the spirit of Larav
 
 Every folder in your sites folder becomes `https://<folder>.test`, with a trusted certificate and no
 config files to write. Switch PHP and Node versions per project, run MySQL, PostgreSQL, Redis and Mailpit,
-and give any site a public link to show someone. You can do it all from a bar icon, an app window or the
-terminal.
+and give any site a public link to show someone.
+
+![The pxm bar panel next to the pxm window](preview.png)
+
+## Three ways to use it
+
+- **The bar icon.** Click the snake in your Omarchy bar for quick switches: global PHP and Node version,
+  your sites with open / terminal / folder / share buttons, what's being shared right now, and an on/off
+  switch for every service.
+- **The pxm window.** Click **Open pxm** in the bar panel, or run `pxm ui`, for the full app: a page each
+  for Sites, PHP, Node, Services, Mail, Logs and Settings. Pick a PHP or Node version per site from a
+  dropdown, turn HTTPS and sharing on or off, copy connection details and `.env` lines, and read logs.
+- **The terminal.** Everything in the window is also a `pxm` command, so scripts and the window always
+  agree.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/php.png" alt="PHP page: global version, installed versions with extensions, install buttons"></td>
+    <td><img src="docs/screenshots/node.png" alt="Node page: global version, installed versions, install LTS lines"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/services.png" alt="Services page: on/off switches with connection details and .env lines"></td>
+    <td><img src="docs/screenshots/mail.png" alt="Mail page: Mailpit SMTP settings, Laravel .env lines and a test email button"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings.png" alt="Settings page: choose editor, terminal, file manager, browser and a sharing domain"></td>
+    <td><img src="docs/screenshots/bar.png" alt="The bar panel" height="400"></td>
+  </tr>
+</table>
 
 ## Features
 
