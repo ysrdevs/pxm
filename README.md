@@ -68,6 +68,19 @@ and give any site a public link to show someone.
 `pxm setup` installs everything else from the Arch repos: `caddy`, `dnsmasq`, `nss`, `cloudflared`, `php`,
 `php-fpm` and `composer`.
 
+### What pxm downloads
+
+- **PHP:** quick versions are prebuilt by [static-php-cli](https://github.com/crazywhalecc/static-php-cli)
+  and downloaded from `dl.static-php.dev`. Full builds use the same tool to download PHP and library sources
+  and compile them on your computer. Alphas, betas and RCs come from `php.net`.
+- **Node:** through mise, from `nodejs.org`.
+- **Services:** only when you turn one on, the official Docker images `mysql:8.4`, `postgres:18`, `redis:7`
+  and `axllent/mailpit`.
+- **The Laravel installer:** `composer global require laravel/installer`, only if you don't already have
+  `laravel`.
+- **Sharing:** Cloudflare Tunnel (`cloudflared`). Random links need no account. Your own domain needs a
+  one-time Cloudflare login in your browser.
+
 ## Install
 
 ```bash
@@ -77,14 +90,14 @@ omarchy plugin add https://github.com/ysrdevs/pxm --enable
 
 The first command adds the bar icon and the window. The second does the one-time setup: it asks where
 your sites folder should be and which services you want (MySQL, PostgreSQL, Redis, Mailpit, all or none),
-asks for your password once, and downloads the latest PHP. If you'd rather use the bar, click the new icon
-and choose **Set up pxm**.
+shows what it's about to change and asks before changing anything, then asks for your password once and
+downloads the latest PHP. If you'd rather use the bar, click the new icon and choose **Set up pxm**.
 
 Open a new terminal afterwards so `php` picks up pxm's version.
 
 ### What setup changes on your system
 
-pxm only touches the files listed here, and `pxm uninstall` removes all of them.
+Setup lists these before it starts, and `pxm uninstall` removes all of them:
 
 | What | Where |
 |---|---|
@@ -97,7 +110,11 @@ pxm only touches the files listed here, and `pxm uninstall` removes all of them.
 | The pxm window floats like an app window | a marked block in `~/.config/hypr/hyprland.lua` |
 | The `pxm` command | `~/.local/bin/pxm` (a link into the plugin folder) |
 
-PHP versions live in `~/.local/share/pxm` and settings in `~/.config/pxm`.
+PHP versions live in `~/.local/share/pxm` and settings in `~/.config/pxm`. `pxm uninstall` keeps them so
+setup can pick them up again, and `pxm uninstall --purge` deletes them.
+
+Uninstall also leaves a few things in place on purpose: the Arch packages above (other apps may use them),
+the Docker services you picked (your databases live in them), and the Laravel installer.
 
 ## Using it
 

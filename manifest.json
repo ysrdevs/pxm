@@ -9,8 +9,11 @@
   "license": "MIT",
   "homepage": "https://github.com/ysrdevs/pxm",
   "repository": "https://github.com/ysrdevs/pxm",
-  "description": "Local PHP development for Omarchy, in the spirit of Laravel Herd: PHP and Node versions, *.test sites with HTTPS, public share links, databases and mail.",
-  "kinds": ["bar-widget", "panel"],
+  "description": "Local PHP development for Omarchy, in the spirit of Laravel Herd, from a bar icon and an app window. Every folder in your sites folder becomes https://<folder>.test with a trusted certificate. Switch PHP and Node versions per project, run MySQL, PostgreSQL, Redis and Mailpit, and give any site a public link. Run pxm setup once after installing.",
+  "kinds": [
+    "bar-widget",
+    "panel"
+  ],
   "entryPoints": {
     "barWidget": "Panel.qml",
     "panel": "Window.qml"
@@ -19,7 +22,11 @@
     "displayName": "pxm",
     "description": "PHP and Node versions, your .test sites, sharing and dev services.",
     "category": "Development",
-    "aliases": ["php", "herd", "laravel"],
+    "aliases": [
+      "php",
+      "herd",
+      "laravel"
+    ],
     "allowMultiple": false,
     "defaultSection": "right"
   }

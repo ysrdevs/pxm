@@ -3,7 +3,7 @@
 
 Setup
   pxm setup                         one-time setup (asks for your password once)
-      [--sites-dir DIR] [--services "mysql mailpit"|all|none]   answer setup's questions up front
+      [--sites-dir DIR] [--services "mysql mailpit"|all|none] [--yes]   answer setup's questions up front
   pxm doctor                        check that everything is in place
   pxm uninstall [--purge]           undo setup (--purge also deletes PHP versions and settings)
 
@@ -2109,7 +2109,7 @@ def choose_services(answer=None):
     return picked
 
 
-def setup(sites_dir=None, services=None):
+def setup(sites_dir=None, services=None, assume_yes=False):
     print(f'pxm {version()} setup')
     if not shutil.which('pacman'):
         die('pxm needs Arch Linux (Omarchy)')
@@ -2124,12 +2124,27 @@ def setup(sites_dir=None, services=None):
         print('\nEvery folder in your sites folder becomes https://<folder>.test')
         chosen = ask('Sites folder', default_sites_dir().replace(str(HOME), '~'))
     sd = Path(os.path.expanduser(chosen)).resolve()
-    sd.mkdir(parents=True, exist_ok=True)
-    cfg['sites_dir'] = str(sd)
-    save_config(cfg)
     picked = choose_services(services) if shutil.which('docker') else []
     if services and not shutil.which('docker'):
         warn('Docker is not installed, so no services were set up (sudo pacman -S docker)')
+
+    missing = [x for x in PACKAGES if subprocess.run(['pacman', '-Q', x], capture_output=True).returncode]
+    print('\npxm setup will:')
+    if missing:
+        print(f"  - install {', '.join(missing)} from the Arch repos")
+    print('  - point *.test addresses at this computer, and let the web server use ports 80 and 443')
+    print('  - trust a local HTTPS certificate made on this computer')
+    print('  - add a marked PATH block to ~/.bashrc and a marked window rule to ~/.config/hypr/hyprland.lua')
+    print(f"  - serve every folder in {str(sd).replace(str(HOME), '~')} and download the latest PHP if you have none")
+    if picked:
+        print(f"  - download and start {', '.join(SERVICE_CHOICES[x] for x in picked)} in Docker")
+    print('`pxm uninstall` undoes all of this. The full list is in the README.')
+    if not assume_yes and ask('Continue?', 'yes').lower() not in ('y', 'yes'):
+        print('Nothing changed.')
+        return
+    sd.mkdir(parents=True, exist_ok=True)
+    cfg['sites_dir'] = str(sd)
+    save_config(cfg)
 
     step('System settings (asks for your password once)' + (' and ' + ', '.join(SERVICE_CHOICES[x] for x in picked)
                                                               if picked else ''))
@@ -2272,7 +2287,7 @@ def uninstall(purge=False, assume_yes=False):
     print('the port setting, the shell PATH line and the window rule. Your sites and Docker databases are kept.')
     if purge:
         print('--purge: your PHP versions and pxm settings are deleted too.')
-    if not assume_yes and ask('Continue? (y/N)', 'n').lower() not in ('y', 'yes'):
+    if not assume_yes and ask('Continue?', 'no').lower() not in ('y', 'yes'):
         print('Nothing changed.')
         return
 
@@ -2369,7 +2384,7 @@ def main(argv):
     if cmd == 'setup':
         def opt(name):
             return next((rest[i + 1] for i, a in enumerate(rest) if a == name and i + 1 < len(rest)), None)
-        return setup(opt('--sites-dir'), opt('--services'))
+        return setup(opt('--sites-dir'), opt('--services'), assume_yes='--yes' in rest or '-y' in rest)
     if cmd == 'doctor':
         return doctor()
     if cmd == 'uninstall':
