@@ -229,7 +229,7 @@ Item {
             Column {
               anchors.verticalCenter: parent.verticalCenter
               Text { text: "pxm"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-              Text { text: "PHP " + (root.st.global_full || "…"); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+              Text { text: root.ready ? "PHP " + (root.st.global_full || "…") : "not set up yet"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
             }
           }
 
@@ -336,7 +336,7 @@ Item {
       }
       Text {
         width: parent.inner; wrapMode: Text.WordWrap
-        text: "Or run it yourself in a terminal: pxm setup  (from " + root.tilde(root.pxm) + ")"
+        text: "Or run this in a terminal:  " + root.tilde(root.pxm) + " setup"
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
       }
     }
