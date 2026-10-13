@@ -798,7 +798,7 @@ Item {
                 spacing: Style.space(8)
                 Text { text: "●"; color: svcCard.modelData.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                 Text { text: svcCard.modelData.name; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-                Text { text: svcCard.modelData.up ? "running" : "stopped"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: svcCard.modelData.up ? "running" : svcCard.modelData.created === false ? "not downloaded yet" : "stopped"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
               }
               ToggleSwitch {
                 id: svcToggle
@@ -811,9 +811,17 @@ Item {
                 onToggled: {
                   root.svcBusy = svcCard.modelData.id
                   root.run(["service", svcCard.modelData.up ? "stop" : "start", svcCard.modelData.id],
-                           (svcCard.modelData.up ? "Stopping " : "Starting ") + svcCard.modelData.name + "…")
+                           svcCard.modelData.up ? "Stopping " + svcCard.modelData.name + "…"
+                           : svcCard.modelData.created === false ? "Downloading " + svcCard.modelData.name + " (first time, about a minute)…"
+                           : "Starting " + svcCard.modelData.name + "…")
                 }
               }
+            }
+            Text {
+              visible: svcCard.modelData.created === false && root.svcBusy !== svcCard.modelData.id
+              width: parent.width; wrapMode: Text.WordWrap
+              text: "Switch it on to download it. The first start takes about a minute; after that it starts in seconds."
+              color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
             }
             Repeater {
               model: svcCard.modelData.details || []
@@ -877,11 +885,11 @@ Item {
       Row {
         spacing: Style.space(10)
         Text { text: "●"; color: root.mailpit && root.mailpit.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-        Text { text: root.mailpit && root.mailpit.up ? "Mailpit is running" : "Mailpit is stopped"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
+        Text { text: root.mailpit && root.mailpit.up ? "Mailpit is running" : root.mailpit && root.mailpit.created === false ? "Mailpit isn't downloaded yet" : "Mailpit is stopped"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
         Button {
           visible: !!root.mailpit && !root.mailpit.up
           text: "Start"; bordered: true; foreground: root.fg; fontFamily: root.ff
-          onClicked: root.run(["service", "start", "mailpit"], "Starting Mailpit…")
+          onClicked: root.run(["service", "start", "mailpit"], root.mailpit.created === false ? "Downloading Mailpit (first time, about a minute)…" : "Starting Mailpit…")
         }
       }
 

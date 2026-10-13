@@ -3,6 +3,7 @@
 
 Setup
   pxm setup                         one-time setup (asks for your password once)
+      [--sites-dir DIR] [--services "mysql mailpit"|all|none]   answer setup's questions up front
   pxm doctor                        check that everything is in place
   pxm uninstall [--purge]           undo setup (--purge also deletes PHP versions and settings)
 
@@ -49,7 +50,7 @@ Sharing (Cloudflare Tunnel)
   pxm unshare [name]                stop sharing (the link stops working at once)
   pxm shares                        what's being shared right now
 
-Services (Docker containers, created the first time you start them)
+Services (Docker containers: picked during setup, or downloaded the first time you start them)
   pxm service list                  dev services and whether they run
   pxm service start <name>          web, mysql, postgres, redis, mailpit
   pxm service stop <name>           stays stopped after a reboot
@@ -830,6 +831,45 @@ SERVICE_INFO = {
 }
 
 
+def docker_containers():
+    """Names of all containers, or None when Docker can't be asked without a password (or isn't running:
+    asking would wake the daemon up on every status poll)."""
+    if not shutil.which('docker') or subprocess.run(['systemctl', 'is-active', '--quiet', 'docker.service']).returncode:
+        return None
+    try:
+        r = subprocess.run(['docker', 'ps', '-a', '--format', '{{.Names}}'], capture_output=True, text=True, timeout=5)
+    except subprocess.TimeoutExpired:
+        return None
+    return set(r.stdout.split()) if r.returncode == 0 else None
+
+
+def services_status(cfg):
+    """Each service, running or not, and whether its container exists yet (pxm remembers the ones it has seen,
+    since Omarchy keeps you out of the docker group and Docker can't always be asked)."""
+    seen = set(cfg.get('containers', []))
+    existing = docker_containers()
+    out = []
+    for sid, name, port, url, how in SERVICES:
+        kind, target = how.split(':', 1)
+        up = port_open(port)
+        created = kind == 'systemd' or up or target in seen or (existing is not None and target in existing)
+        if kind == 'docker' and created:
+            seen.add(target)
+        out.append({'id': sid, 'name': name, 'port': port, 'url': url, 'up': up, 'created': created,
+                    **service_info(sid, cfg)})
+    if seen != set(cfg.get('containers', [])):
+        cfg['containers'] = sorted(seen)
+        save_config(cfg)
+    return out
+
+
+def remember_container(target):
+    cfg = load_config()
+    if target not in cfg.get('containers', []):
+        cfg['containers'] = sorted(set(cfg.get('containers', [])) | {target})
+        save_config(cfg)
+
+
 def service_info(sid, cfg):
     info = json.loads(json.dumps(SERVICE_INFO.get(sid, {'details': [], 'env': ''})))
     if sid == 'web':
@@ -881,8 +921,10 @@ def service(action, name):
         if r.returncode:
             out = (r.stderr or r.stdout).strip().splitlines()
             die(f'could not {action} {label}: {out[-1] if out else "unknown error"}')
-        if action == 'start' and 'started' not in r.stdout:
-            print(f'Created the {label} container.', flush=True)
+        if action == 'start':
+            remember_container(target)
+            if 'started' not in r.stdout:
+                print(f'Downloaded and created {label}.', flush=True)
     import time
     for _ in range(40 if action == 'stop' or kind == 'systemd' else 480):   # wait until the port agrees
         if port_open(port) == (action == 'start'):
@@ -1928,16 +1970,21 @@ def omarchy_plugin_enabled():
     return any(x.get('id') == PLUGIN_ID and x.get('enabled') for x in plugins)
 
 
-def run_root(action):
+def run_root(action, *args):
     """The parts that need admin rights run in one go, behind one password prompt."""
-    r = subprocess.run(['pkexec', '/usr/bin/python3', str(SELF), '_root', action])
+    r = subprocess.run(['pkexec', '/usr/bin/python3', str(SELF), '_root', action, *args])
     if r.returncode == 126 or r.returncode == 127:
         die('the password prompt was cancelled; nothing was changed. Run it again when ready.')
     if r.returncode:
         die(f'the admin step failed (exit {r.returncode}); see the messages above')
 
 
-def root_main(action):
+def root_report_path(uid):
+    """Where the admin step leaves notes for the rest of setup (the user's private runtime folder)."""
+    return Path(f'/run/user/{uid}/pxm-setup-report.json')
+
+
+def root_main(action, args=()):
     """Runs as root (via pkexec) for the user in PKEXEC_UID."""
     import pwd
     if os.geteuid() != 0 or 'PKEXEC_UID' not in os.environ:
@@ -1992,6 +2039,32 @@ def root_main(action):
         sh('install', '-m', '644', str(ca_root), CA_ANCHOR)
         sh('trust', 'extract-compat')
         print('   ✓ HTTPS certificate trusted system-wide', flush=True)
+        wanted = [x for x in (args[args.index('--services') + 1] if '--services' in args else '').split(',') if x]
+        containers = set()
+        if shutil.which('docker'):
+            for sid, label, port, url, how in SERVICES:
+                target = how.split(':', 1)[1]
+                if sid not in wanted:
+                    continue
+                if sh('docker', 'start', target, check=False, quiet=True).returncode == 0:
+                    print(f'   ✓ {label} is running', flush=True)
+                    continue
+                print(f'   Downloading {label} (first time only, about a minute)…', flush=True)
+                r = sh('docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *DOCKER_RUN[target],
+                       check=False, quiet=True)
+                if r.returncode:
+                    lines = (r.stderr or r.stdout).strip().splitlines()
+                    print(f"   ! could not set up {label}: {lines[-1] if lines else 'unknown error'}", flush=True)
+                else:
+                    print(f'   ✓ {label} is running', flush=True)
+            r = sh('docker', 'ps', '-a', '--format', '{{.Names}}', check=False, quiet=True)
+            containers = set(r.stdout.split()) & {how.split(':', 1)[1] for _, _, _, _, how in SERVICES}
+        report = root_report_path(user.pw_uid)
+        report.unlink(missing_ok=True)
+        fd = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps({'containers': sorted(containers)}))
+        os.chown(report, user.pw_uid, user.pw_gid)
     elif action == 'uninstall':
         sh('systemctl', 'disable', '--now', 'pxm-dns-route.service', 'pxm-dns.service', check=False, quiet=True)
         for f in (SYSTEM_UNIT_DIR / 'pxm-dns.service', SYSTEM_UNIT_DIR / 'pxm-dns-route.service',
@@ -2010,7 +2083,33 @@ def root_main(action):
         die(f'unknown admin action {action!r}')
 
 
-def setup(sites_dir=None):
+SERVICE_CHOICES = {'mysql': 'MySQL', 'postgres': 'PostgreSQL', 'redis': 'Redis', 'mailpit': 'Mailpit'}
+
+
+def choose_services(answer=None):
+    """'mysql mailpit' / 'mysql,mailpit' / 'all' / 'none' -> ['mysql', 'mailpit']"""
+    if answer is None:
+        if not sys.stdin.isatty():
+            return []
+        print('\nDatabases and mail run in Docker. Pick the ones you want now; the rest can be switched on any time')
+        print('from the bar or the pxm window (the first start downloads it, about a minute).')
+        print('  ' + '   '.join(f'{k} ({v})' for k, v in SERVICE_CHOICES.items()))
+        answer = ask('Which ones? e.g. "mysql mailpit", "all" or "none"', 'none')
+    words = re.split(r'[\s,]+', answer.strip().lower())
+    if 'all' in words:
+        return list(SERVICE_CHOICES)
+    aliases = {'postgresql': 'postgres', 'pgsql': 'postgres', 'pg': 'postgres', 'mail': 'mailpit'}
+    picked = []
+    for w in words:
+        w = aliases.get(w, w)
+        if w in SERVICE_CHOICES and w not in picked:
+            picked.append(w)
+        elif w and w not in ('none', 'no', 'n'):
+            warn(f'unknown service "{w}" (choose from: {", ".join(SERVICE_CHOICES)})')
+    return picked
+
+
+def setup(sites_dir=None, services=None):
     print(f'pxm {version()} setup')
     if not shutil.which('pacman'):
         die('pxm needs Arch Linux (Omarchy)')
@@ -2028,9 +2127,23 @@ def setup(sites_dir=None):
     sd.mkdir(parents=True, exist_ok=True)
     cfg['sites_dir'] = str(sd)
     save_config(cfg)
+    picked = choose_services(services) if shutil.which('docker') else []
+    if services and not shutil.which('docker'):
+        warn('Docker is not installed, so no services were set up (sudo pacman -S docker)')
 
-    step('System settings (asks for your password once)')
-    run_root('setup')
+    step('System settings (asks for your password once)' + (' and ' + ', '.join(SERVICE_CHOICES[x] for x in picked)
+                                                              if picked else ''))
+    run_root('setup', '--services', ','.join(picked))
+    report = root_report_path(os.getuid())
+    try:
+        found = json.loads(report.read_text()).get('containers', [])
+        report.unlink()
+    except (OSError, ValueError):
+        found = []
+    if found:
+        cfg = load_config()
+        cfg['containers'] = sorted(set(cfg.get('containers', [])) | set(found))
+        save_config(cfg)
 
     step('Web server and PHP')
     USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2235,8 +2348,7 @@ def status():
         'buildable': BUILDABLE_MINORS,
         'building': building(),
         'installing': sorted(p.name.removeprefix('installing-') for p in CACHE.glob('installing-*')) if CACHE.exists() else [],
-        'services': [{'id': i, 'name': n, 'port': port, 'url': url, 'up': port_open(port),
-                      **service_info(i, cfg)} for i, n, port, url, _ in SERVICES],
+        'services': services_status(cfg),
         'docker': shutil.which('docker') is not None,
         'trusted': (NSSDB / 'cert9.db').exists() and subprocess.run(
             ['certutil', '-L', '-d', f'sql:{NSSDB}', '-n', CA_NAME], capture_output=True).returncode == 0,
@@ -2253,10 +2365,11 @@ def main(argv):
         print(f'pxm {version()}')
         return
     if cmd == '_root':
-        return root_main(rest[0] if rest else '')
+        return root_main(rest[0] if rest else '', rest[1:])
     if cmd == 'setup':
-        d = next((rest[i + 1] for i, a in enumerate(rest) if a == '--sites-dir' and i + 1 < len(rest)), None)
-        return setup(d)
+        def opt(name):
+            return next((rest[i + 1] for i, a in enumerate(rest) if a == name and i + 1 < len(rest)), None)
+        return setup(opt('--sites-dir'), opt('--services'))
     if cmd == 'doctor':
         return doctor()
     if cmd == 'uninstall':

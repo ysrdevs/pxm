@@ -616,7 +616,8 @@ Panel {
               }
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: (modelData.up ? "running" : "stopped") + " · :" + modelData.port
+                text: modelData.up ? "running · :" + modelData.port
+                      : modelData.created === false ? "first start downloads it" : "stopped · :" + modelData.port
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
               }
             }
@@ -640,7 +641,9 @@ Panel {
                 onToggled: {
                   root.svcBusy = modelData.id
                   root.act(["service", modelData.up ? "stop" : "start", modelData.id],
-                           (modelData.up ? "Stopping " : "Starting ") + modelData.name + "…")
+                           modelData.up ? "Stopping " + modelData.name + "…"
+                           : modelData.created === false ? "Downloading " + modelData.name + " (first time, about a minute)…"
+                           : "Starting " + modelData.name + "…")
                 }
               }
             }

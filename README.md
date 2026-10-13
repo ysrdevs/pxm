@@ -21,9 +21,10 @@ terminal.
   `*.trycloudflare.com` links need no account. With your own Cloudflare domain, links look like
   `https://<site>.yourdomain.com` and stay the same every time. pxm warns you when debug mode is on, and it
   refuses to share phpMyAdmin.
-- **Services.** MySQL, PostgreSQL, Redis and Mailpit run in Docker. Each container is created the first
-  time you switch it on, with the same names and settings as Omarchy's *Install > Development > Docker DB*
-  menu, so containers made there are picked up too. The window shows the connection details and the `.env`
+- **Services.** MySQL, PostgreSQL, Redis and Mailpit run in Docker. Pick the ones you want during setup,
+  or switch one on later and pxm downloads it then (about a minute, the first time only). The containers
+  use the same names and settings as Omarchy's *Install > Development > Docker DB* menu, so containers made
+  there are picked up too. The window shows the connection details and the `.env`
   lines for each service.
 - **Mail.** Mailpit catches every email your apps send. The window shows the SMTP settings and can send a
   test email.
@@ -48,8 +49,9 @@ omarchy plugin add https://github.com/ysrdevs/pxm --enable
 ```
 
 The first command adds the bar icon and the window. The second does the one-time setup: it asks where
-your sites folder should be, asks for your password once, and downloads the latest PHP. If you'd rather
-use the bar, click the new icon and choose **Set up pxm**.
+your sites folder should be and which services you want (MySQL, PostgreSQL, Redis, Mailpit, all or none),
+asks for your password once, and downloads the latest PHP. If you'd rather use the bar, click the new icon
+and choose **Set up pxm**.
 
 Open a new terminal afterwards so `php` picks up pxm's version.
 
@@ -103,6 +105,9 @@ pxm --help                   # everything else
 
 These are for local development only: every port listens on `127.0.0.1`, so other devices on your network
 can't reach them.
+
+Omarchy keeps your account out of Docker's admin group on purpose, so switching a service on or off asks
+for your password. To skip that, turn on Omarchy's sudoless Docker option and restart.
 
 ## Uninstall
 
