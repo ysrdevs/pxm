@@ -85,6 +85,8 @@ and give any site a public link to show someone.
 
 ## Install
 
+On Omarchy:
+
 ```bash
 omarchy plugin add https://github.com/ysrdevs/pxm --enable
 ~/.config/omarchy/plugins/pxm/bin/pxm setup
@@ -96,6 +98,20 @@ shows what it's about to change and asks before changing anything, then asks for
 downloads the latest PHP. If you'd rather use the bar, click the new icon and choose **Set up pxm**.
 
 Open a new terminal afterwards so `php` picks up pxm's version.
+
+### Other Linux
+
+The `pxm` command also works on Debian 12+, Ubuntu 24.04+ and Fedora, without the bar icon and window:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ysrdevs/pxm/main/install.sh | sh
+```
+
+This puts pxm in `~/.local/lib/pxm` and runs the same `pxm setup`. On Omarchy the same line installs the
+plugin instead, so you get the bar icon and window either way. Run the line again to update. You need
+`git`, `python3` and `systemd-resolved` (the default on Ubuntu and Fedora). Sharing needs
+[cloudflared](https://pkg.cloudflare.com/), and Node versions need [mise](https://mise.jdx.dev); pxm tells
+you when one is missing.
 
 ### What setup changes on your system
 

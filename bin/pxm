@@ -121,7 +121,13 @@ DEFAULT_CONFIG = {'sites_dir': '', 'links': {}, 'insecure': []}
 CADDYFILE = CONF_DIR / 'Caddyfile'
 CA_ROOT = HOME / '.local/share/caddy/pki/authorities/local/root.crt'
 CA_NAME = 'pxm local CA'
-CA_ANCHOR = '/etc/ca-certificates/trust-source/anchors/pxm-local-ca.crt'
+# The package manager tells pxm which Linux this is: package names and the system trust store differ.
+PM = next((pm for pm in ('pacman', 'apt-get', 'dnf') if shutil.which(pm)), None)
+DISTRO = {'pacman': 'Arch', 'apt-get': 'Debian/Ubuntu', 'dnf': 'Fedora'}.get(PM, 'Linux')
+CA_ANCHOR, CA_UPDATE = {
+    'apt-get': ('/usr/local/share/ca-certificates/pxm-local-ca.crt', ['update-ca-certificates']),
+    'dnf': ('/etc/pki/ca-trust/source/anchors/pxm-local-ca.crt', ['update-ca-trust']),
+}.get(PM, ('/etc/ca-certificates/trust-source/anchors/pxm-local-ca.crt', ['trust', 'extract-compat']))
 NSSDB = HOME / '.pki/nssdb'
 
 
@@ -582,7 +588,10 @@ def build(spec, foreground=False):
 
 
 def notify_user(title, body=''):
-    subprocess.run(['omarchy-notification-send', '-g', '\U000F031F', title, body], capture_output=True)
+    if shutil.which('omarchy-notification-send'):
+        subprocess.run(['omarchy-notification-send', '-g', '\U000F031F', title, body], capture_output=True)
+    elif shutil.which('notify-send'):
+        subprocess.run(['notify-send', '-a', 'pxm', title, body], capture_output=True)
 
 
 def build_kind(full):
@@ -827,7 +836,8 @@ def trust():
         die('the local certificate authority does not exist yet: run pxm setup')
     trust_nss()
     # everything else (curl, PHP, Node, Firefox on Arch) uses the system trust store: needs admin
-    r = subprocess.run(['pkexec', 'sh', '-c', f'install -m 644 {shlex.quote(str(CA_ROOT))} {CA_ANCHOR} && trust extract-compat'])
+    r = subprocess.run([*root_argv(), 'sh', '-c',
+                        f'install -D -m 644 {shlex.quote(str(CA_ROOT))} {CA_ANCHOR} && {" ".join(CA_UPDATE)}'])
     if r.returncode:
         die('could not add the certificate to the system trust store')
     print('Trusted the pxm HTTPS certificate. Restart your browser if it was open.')
@@ -916,7 +926,8 @@ def docker_sh(script):
     """Run a docker shell snippet. Omarchy keeps users out of the docker group by default (it's root-equivalent),
     so when the socket refuses us, run it through one admin prompt instead."""
     if not shutil.which('docker'):
-        die('this service runs in Docker, which is not installed: sudo pacman -S docker && sudo systemctl enable --now docker')
+        die('this service runs in Docker, which is not installed (Omarchy: Install > Development > Docker; '
+            'elsewhere install the docker package and enable docker.service)')
     r = subprocess.run(['docker', 'info', '--format', '{{.ID}}'], capture_output=True, text=True)
     if r.returncode and 'permission denied' in (r.stderr or '').lower():
         return subprocess.run(['pkexec', 'sh', '-c', script], capture_output=True, text=True)
@@ -1040,7 +1051,7 @@ def cloudflared(*args):
 def share_domain_setup(domain):
     """Connect a Cloudflare domain: browser login (once), then a named tunnel for this laptop."""
     if not shutil.which('cloudflared'):
-        die('cloudflared is not installed: sudo pacman -S cloudflared')
+        die(f'cloudflared is not installed: {CLOUDFLARED_HINT}')
     domain = domain.strip().lower().removeprefix('https://').removeprefix('http://').strip('/')
     if not re.fullmatch(r'[a-z0-9-]+(\.[a-z0-9-]+)+', domain):
         die(f'"{domain}" does not look like a domain')
@@ -1114,7 +1125,7 @@ def restart_tunnel(cfg):
 
 def share(name=None, quick=False):
     if not shutil.which('cloudflared'):
-        die('cloudflared is not installed: sudo pacman -S cloudflared')
+        die(f'cloudflared is not installed: {CLOUDFLARED_HINT}')
     site_name, s = find_site(name)
     if is_phpmyadmin(s['path']):
         die(f'{site_name}.test is phpMyAdmin, which logs in automatically as root. Sharing it would let anyone '
@@ -1240,7 +1251,7 @@ def nkey(v):
 def mise_bin():
     b = shutil.which('mise') or str(HOME / '.local/bin/mise')
     if not Path(b).exists():
-        die('mise is not installed (Omarchy normally ships it): sudo pacman -S mise')
+        die('mise is not installed (Omarchy ships it; elsewhere see https://mise.jdx.dev/getting-started.html)')
     return b
 
 
@@ -1794,13 +1805,35 @@ def mail_test(to='you@example.test'):
 
 
 def ui(section='sites'):
+    if not shutil.which('omarchy-shell'):
+        die('the pxm window is part of the Omarchy bar; on this system use the pxm commands (pxm --help)')
     payload = json.dumps({'section': section})
     r = subprocess.run(['omarchy-shell', 'shell', 'summon', 'pxm', payload], capture_output=True, text=True)
     if r.returncode:
         die(r.stderr.strip() or 'could not open the pxm window')
 
 # ------------------------------------------------------------------ setup / doctor / uninstall
-PACKAGES = ['caddy', 'dnsmasq', 'nss', 'cloudflared', 'php', 'php-fpm', 'composer']
+PACKAGES = {'pacman': ['caddy', 'dnsmasq', 'nss', 'cloudflared', 'php', 'php-fpm', 'composer'],
+            'apt-get': ['caddy', 'dnsmasq-base', 'libnss3-tools', 'composer'],   # composer brings php-cli
+            'dnf': ['caddy', 'dnsmasq', 'nss-tools', 'composer']}.get(PM, [])
+CLOUDFLARED_HINT = 'sudo pacman -S cloudflared' if PM == 'pacman' else 'see https://pkg.cloudflare.com/'
+
+
+def pkg_installed(name):
+    if PM == 'apt-get':
+        r = subprocess.run(['dpkg-query', '-W', '-f=${db:Status-Status}', name], capture_output=True, text=True)
+        return r.stdout.strip() == 'installed'
+    query = {'pacman': ['pacman', '-Q'], 'dnf': ['rpm', '-q']}.get(PM)
+    return bool(query) and subprocess.run([*query, name], capture_output=True).returncode == 0
+
+
+def missing_packages():
+    return [p for p in PACKAGES if not pkg_installed(p)]
+
+
+def system_caddy_enabled():
+    """Debian's caddy package starts a system-wide Caddy on port 80, which would block pxm's own."""
+    return subprocess.run(['systemctl', 'is-enabled', '--quiet', 'caddy.service'], capture_output=True).returncode == 0
 DNS_IP = '127.0.0.2'              # dnsmasq answers here, and only for *.test
 DNS_LINK = 'pxmdns'               # dummy link that tells systemd-resolved to send *.test lookups to dnsmasq
 ETC_DIR = Path('/etc/pxm')
@@ -1831,7 +1864,7 @@ After=network.target
 Before=nss-lookup.target
 
 [Service]
-ExecStart=/usr/bin/dnsmasq --keep-in-foreground --conf-file={ETC_DIR}/dnsmasq.conf --user=dnsmasq --group=dnsmasq --pid-file=
+ExecStart={{dnsmasq}} --keep-in-foreground --conf-file={ETC_DIR}/dnsmasq.conf --user=dnsmasq --group=dnsmasq --pid-file=
 Restart=on-failure
 
 [Install]
@@ -1850,14 +1883,14 @@ PartOf=systemd-resolved.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=-/usr/bin/ip link add {DNS_LINK} type dummy
-ExecStart=/usr/bin/ip addr replace 192.0.2.53/32 dev {DNS_LINK}
-ExecStart=/usr/bin/ip link set {DNS_LINK} up
-ExecStart=/usr/bin/resolvectl dns {DNS_LINK} {DNS_IP}
-ExecStart=/usr/bin/resolvectl domain {DNS_LINK} ~test
-ExecStart=/usr/bin/resolvectl default-route {DNS_LINK} false
-ExecStart=/usr/bin/resolvectl dnsovertls {DNS_LINK} no
-ExecStop=-/usr/bin/ip link del {DNS_LINK}
+ExecStart=-{{ip}} link add {DNS_LINK} type dummy
+ExecStart={{ip}} addr replace 192.0.2.53/32 dev {DNS_LINK}
+ExecStart={{ip}} link set {DNS_LINK} up
+ExecStart={{resolvectl}} dns {DNS_LINK} {DNS_IP}
+ExecStart={{resolvectl}} domain {DNS_LINK} ~test
+ExecStart={{resolvectl}} default-route {DNS_LINK} false
+ExecStart={{resolvectl}} dnsovertls {DNS_LINK} no
+ExecStop=-{{ip}} link del {DNS_LINK}
 
 [Install]
 WantedBy=multi-user.target systemd-resolved.service
@@ -1997,9 +2030,16 @@ def omarchy_plugin_enabled():
     return any(x.get('id') == PLUGIN_ID and x.get('enabled') for x in plugins)
 
 
+def root_argv():
+    """pkexec shows a graphical password prompt; sudo is the fallback where there is none."""
+    if shutil.which('pkexec') and (os.environ.get('WAYLAND_DISPLAY') or os.environ.get('DISPLAY')):
+        return ['pkexec']
+    return ['sudo']
+
+
 def run_root(action, *args):
     """The parts that need admin rights run in one go, behind one password prompt."""
-    r = subprocess.run(['pkexec', '/usr/bin/python3', str(SELF), '_root', action, *args])
+    r = subprocess.run([*root_argv(), sys.executable, str(SELF), '_root', action, *args])
     if r.returncode == 126 or r.returncode == 127:
         die('the password prompt was cancelled; nothing was changed. Run it again when ready.')
     if r.returncode:
@@ -2012,11 +2052,12 @@ def root_report_path(uid):
 
 
 def root_main(action, args=()):
-    """Runs as root (via pkexec) for the user in PKEXEC_UID."""
+    """Runs as root (via pkexec or sudo) for the user in PKEXEC_UID / SUDO_UID."""
     import pwd
-    if os.geteuid() != 0 or 'PKEXEC_UID' not in os.environ:
-        die('this part runs through pkexec; use: pxm setup')
-    user = pwd.getpwuid(int(os.environ['PKEXEC_UID']))
+    uid = os.environ.get('PKEXEC_UID') or os.environ.get('SUDO_UID')
+    if os.geteuid() != 0 or not uid:
+        die('this part runs through pkexec or sudo; use: pxm setup')
+    user = pwd.getpwuid(int(uid))
     home = Path(user.pw_dir)
     ca_root = home / '.local/share/caddy/pki/authorities/local/root.crt'
 
@@ -2028,11 +2069,22 @@ def root_main(action, args=()):
 
     if action == 'setup':
         print('   Installing packages (skips the ones you already have)…', flush=True)
-        sh('pacman', '-S', '--needed', '--noconfirm', *PACKAGES)
+        if PM == 'pacman':
+            sh('pacman', '-S', '--needed', '--noconfirm', *PACKAGES)
+        elif PM == 'apt-get':
+            os.environ['DEBIAN_FRONTEND'] = 'noninteractive'
+            sh('apt-get', 'update', '-qq', check=False, quiet=True)
+            sh('apt-get', 'install', '-y', '-qq', '--no-install-recommends', *PACKAGES)
+        elif PM == 'dnf':
+            sh('dnf', 'install', '-y', '-q', *PACKAGES)
+        if system_caddy_enabled():
+            sh('systemctl', 'disable', '--now', 'caddy.service', check=False, quiet=True)
+            print('   ✓ turned off the system-wide Caddy service (pxm runs Caddy as you)', flush=True)
+        tools = {t: shutil.which(t) or f'/usr/bin/{t}' for t in ('dnsmasq', 'ip', 'resolvectl')}   # /usr/sbin on Debian
         ETC_DIR.mkdir(exist_ok=True)
         (ETC_DIR / 'dnsmasq.conf').write_text(DNSMASQ_CONF)
-        (SYSTEM_UNIT_DIR / 'pxm-dns.service').write_text(DNS_UNIT)
-        (SYSTEM_UNIT_DIR / 'pxm-dns-route.service').write_text(DNS_ROUTE_UNIT)
+        (SYSTEM_UNIT_DIR / 'pxm-dns.service').write_text(DNS_UNIT.format(**tools))
+        (SYSTEM_UNIT_DIR / 'pxm-dns-route.service').write_text(DNS_ROUTE_UNIT.format(**tools))
         if NM_CONF.parent.is_dir():
             NM_CONF.write_text(NM_UNMANAGED)
             sh('nmcli', 'general', 'reload', 'conf', check=False, quiet=True)
@@ -2063,8 +2115,8 @@ def root_main(action, args=()):
             shutil.rmtree(tmp, ignore_errors=True)
         if not ca_root.exists():
             die('Caddy did not create its HTTPS certificate')
-        sh('install', '-m', '644', str(ca_root), CA_ANCHOR)
-        sh('trust', 'extract-compat')
+        sh('install', '-D', '-m', '644', str(ca_root), CA_ANCHOR)
+        sh(*CA_UPDATE)
         print('   ✓ HTTPS certificate trusted system-wide', flush=True)
         wanted = [x for x in (args[args.index('--services') + 1] if '--services' in args else '').split(',') if x]
         containers = set()
@@ -2103,7 +2155,7 @@ def root_main(action, args=()):
         if NM_CONF.parent.is_dir():
             sh('nmcli', 'general', 'reload', 'conf', check=False, quiet=True)
         sh('sysctl', '-q', '-w', 'net.ipv4.ip_unprivileged_port_start=1024', check=False)
-        sh('trust', 'extract-compat', check=False)
+        sh(*CA_UPDATE, check=False)
         sh('resolvectl', 'flush-caches', check=False, quiet=True)
         print('   ✓ removed the *.test DNS, port and certificate settings', flush=True)
     else:
@@ -2138,12 +2190,13 @@ def choose_services(answer=None):
 
 def setup(sites_dir=None, services=None, assume_yes=False):
     print(f'pxm {version()} setup')
-    if not shutil.which('pacman'):
-        die('pxm needs Arch Linux (Omarchy)')
-    if systemctl('show-environment').returncode:
+    if not PM:
+        die('pxm needs a Linux with pacman, apt or dnf (Arch/Omarchy, Debian/Ubuntu or Fedora)')
+    if not shutil.which('systemctl') or systemctl('show-environment').returncode:
         die('systemd user services are not available')
     if subprocess.run(['systemctl', 'is-active', '--quiet', 'systemd-resolved']).returncode:
-        die('pxm needs systemd-resolved (Omarchy uses it by default) for the *.test addresses')
+        die('pxm needs systemd-resolved for the *.test addresses (Omarchy, Ubuntu and Fedora use it by default): '
+            'sudo systemctl enable --now systemd-resolved')
 
     cfg = load_config()
     chosen = sites_dir or cfg.get('sites_dir') or ''
@@ -2153,15 +2206,18 @@ def setup(sites_dir=None, services=None, assume_yes=False):
     sd = Path(os.path.expanduser(chosen)).resolve()
     picked = choose_services(services) if shutil.which('docker') else []
     if services and not shutil.which('docker'):
-        warn('Docker is not installed, so no services were set up (sudo pacman -S docker)')
+        warn('Docker is not installed, so no services were set up (install docker and run pxm setup again)')
 
-    missing = [x for x in PACKAGES if subprocess.run(['pacman', '-Q', x], capture_output=True).returncode]
+    missing = missing_packages()
     print('\npxm setup will:')
     if missing:
-        print(f"  - install {', '.join(missing)} from the Arch repos")
+        print(f"  - install {', '.join(missing)} with {PM.split('-')[0]}")
+    if system_caddy_enabled():
+        print('  - turn off the system-wide Caddy service (pxm runs its own Caddy as you, on ports 80 and 443)')
     print('  - point *.test addresses at this computer, and let the web server use ports 80 and 443')
     print('  - trust a local HTTPS certificate made on this computer')
-    print('  - add a marked PATH block to ~/.bashrc and a marked window rule to ~/.config/hypr/hyprland.lua')
+    print('  - add a marked PATH block to ~/.bashrc' + (' and a marked window rule to ~/.config/hypr/hyprland.lua'
+                                                        if HYPR_CONF.exists() else ''))
     print(f"  - serve every folder in {str(sd).replace(str(HOME), '~')} and download the latest PHP if you have none")
     if picked:
         print(f"  - download and start {', '.join(SERVICE_CHOICES[x] for x in picked)} in Docker")
@@ -2242,7 +2298,8 @@ def setup(sites_dir=None, services=None, assume_yes=False):
         r = subprocess.run(['composer', 'global', 'require', '--quiet', 'laravel/installer'], env=env)
         ok('installed `laravel`') if r.returncode == 0 else warn('could not install it: composer global require laravel/installer')
 
-    step('Omarchy')
+    if HYPR_CONF.exists() or shutil.which('omarchy'):
+        step('Omarchy')
     if HYPR_CONF.exists():
         upsert_block(HYPR_CONF, '--', [
             '-- the pxm window floats like an app window, fully opaque',
@@ -2270,7 +2327,8 @@ def setup(sites_dir=None, services=None, assume_yes=False):
 pxm is ready.
   Sites folder:  {str(sd).replace(str(HOME), '~')}  (every folder in it is https://<folder>.test)
   Global PHP:    {full_version(g) or g}
-  Open a new terminal so `php` uses pxm, then click the snake in the bar or run: pxm ui""")
+  Open a new terminal so `php` uses pxm""" + (', then click the snake in the bar or run: pxm ui'
+                                                if shutil.which('omarchy-shell') else '. Try: pxm sites'))
 
 
 def doctor_checks():
@@ -2278,7 +2336,7 @@ def doctor_checks():
     cfg = load_config()
     fix_setup = 'run pxm setup'
     out = []
-    missing = [p for p in PACKAGES if subprocess.run(['pacman', '-Q', p], capture_output=True).returncode]
+    missing = missing_packages()
     out.append(('packages', not missing, f"missing {', '.join(missing)}: {fix_setup}"))
     out.append(('sites folder', bool(cfg.get('sites_dir')) and Path(cfg.get('sites_dir') or '/nonexistent').is_dir(), fix_setup))
     dns = subprocess.run(['getent', 'hosts', 'pxm-check.test'], capture_output=True, text=True).stdout
@@ -2355,9 +2413,9 @@ def uninstall(purge=False, assume_yes=False):
         ok('PHP versions and settings kept in ~/.local/share/pxm and ~/.config/pxm (pxm setup picks them up again)')
     ok('PATH line, window rule and certificate removed')
     tunnel = (cfg.get('tunnel') or {}).get('name')
-    print(f"""
-pxm is uninstalled.
-  - The bar icon and window are an Omarchy plugin: omarchy plugin remove pxm
+    print('\npxm is uninstalled.' + ("""
+  - The bar icon and window are an Omarchy plugin: omarchy plugin remove pxm""" if shutil.which('omarchy') else f"""
+  - The pxm code is still in {PLUGIN_DIR}; delete that folder to remove it""") + f"""
   - Packages were kept (other apps may use them): {' '.join(PACKAGES)}
   - Docker containers (your databases) were kept: mysql8, postgres18, redis, mailpit""" + (f"""
   - Your Cloudflare tunnel {tunnel} still exists: cloudflared tunnel delete {tunnel}""" if tunnel else ''))
