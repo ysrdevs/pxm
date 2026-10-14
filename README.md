@@ -71,7 +71,9 @@ and give any site a public link to show someone.
 ### What pxm downloads
 
 - **PHP:** quick versions are prebuilt by [static-php-cli](https://github.com/crazywhalecc/static-php-cli)
-  and downloaded from `dl.static-php.dev`. Full builds use the same tool to download PHP and library sources
+  and downloaded from `dl.static-php.dev`. pxm only downloads the versions listed in `php-builds.json`, and
+  checks each file against the SHA-256 digest recorded there before installing it. Full builds use a fixed
+  static-php-cli release from GitHub, also checked against its digest, to download PHP and library sources
   and compile them on your computer. Alphas, betas and RCs come from `php.net`.
 - **Node:** through mise, from `nodejs.org`.
 - **Services:** only when you turn one on, the official Docker images `mysql:8.4`, `postgres:18`, `redis:7`

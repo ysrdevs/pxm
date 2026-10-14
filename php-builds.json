@@ -1,0 +1,26 @@
+{
+ "source": "https://dl.static-php.dev/static-php-cli/common/",
+ "versions": {
+  "8.1.34": {
+   "cli": "4caa8b82b574212b2f7af83cc800b23e0529b3dec85b8b2887547f909e717143",
+   "fpm": "7995c72719d6574c50a727a30c51d6e63adbd4f694150d9562489efd093f4210"
+  },
+  "8.2.32": {
+   "cli": "2e609bb88bae88661dbd447e409531f7c36931adff480d8a0a74e812b889d1be",
+   "fpm": "6e14e116836f9eab42451619fb4d68117ecea4bc4b1efd7011aaee914033f800"
+  },
+  "8.3.32": {
+   "cli": "d7ff2bc40846f4efed2757e5929f7469c96f672fbf33eb4bb80cd695534750fe",
+   "fpm": "78d9ac9d52fedacc33d428196d0e5e9ace8ac010091c334daae85a669370f861"
+  },
+  "8.4.23": {
+   "cli": "1aeed5bc7967977ca5b1da7163acd91bf9ba3ac56037045d4e91ee2ff2712bb7",
+   "fpm": "baa5ddcf2f9aabff78848cb6851bb104a4c0873347b8ee65eb9bcf4760a4d31a"
+  },
+  "8.5.8": {
+   "cli": "517a18e0f0874de35669fe134eb3c52508e128a6d1da5bf890760cb800ada410",
+   "fpm": "836412ac76432e9f8e49a88c440c381acb2d262cc6dab4ba0a80468ab568a239"
+  }
+ },
+ "updated": "2026-10-13"
+}

@@ -71,6 +71,7 @@ Other
   pxm status --json                 everything, for the bar panel and window
   pxm --version
 """
+import hashlib
 import json
 import os
 import re
@@ -96,6 +97,7 @@ BUILDS = 'https://dl.static-php.dev/static-php-cli/common/'
 CACHE = HOME / '.cache/pxm'
 SELF = Path(__file__).resolve()            # bin/pxm inside the Omarchy plugin folder
 PLUGIN_DIR = SELF.parent.parent
+MANIFEST = PLUGIN_DIR / 'php-builds.json'  # downloadable PHP versions + SHA-256 digests (tools/update-php-builds)
 PLUGIN_ID = 'pxm'
 LINK = HOME / '.local/bin/pxm'             # `pxm` on PATH (created by pxm setup)
 SERVICES = [  # id, name, port, url to open (or None), how it runs
@@ -260,30 +262,34 @@ def fetch(url):
         return r.read().decode()
 
 
-def download(url, dest):
+def download(url, dest, sha256):
+    """Download url to dest and refuse it unless its SHA-256 matches the expected digest."""
+    h = hashlib.sha256()
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=300) as r, open(dest, 'wb') as f:
-        shutil.copyfileobj(r, f)
+        for chunk in iter(lambda: r.read(1 << 20), b''):
+            h.update(chunk)
+            f.write(chunk)
+    if h.hexdigest() != sha256:
+        Path(dest).unlink(missing_ok=True)
+        die(f'checksum mismatch for {url}: the download does not match the digest pxm expects, so it was not installed')
 
 
-def available(max_age=6 * 3600):
-    """Latest prebuilt patch for each minor line: {'8.4': '8.4.23', ...} (cached for 6 h)."""
-    import time
-    cache = CACHE / 'available.json'
-    if max_age and cache.exists() and time.time() - cache.stat().st_mtime < max_age:
-        return json.loads(cache.read_text())
+def php_builds():
+    """Prebuilt PHP versions pxm may download, with their SHA-256 digests (php-builds.json in the plugin)."""
     try:
-        listing = fetch(BUILDS)
-    except Exception:
-        return json.loads(cache.read_text()) if cache.exists() else {}
+        return json.loads(MANIFEST.read_text())['versions']
+    except (OSError, ValueError, KeyError):
+        die(f'{MANIFEST} is missing or unreadable; reinstall the pxm plugin')
+
+
+def available():
+    """Newest downloadable patch for each minor line: {'8.4': '8.4.23', ...}."""
     found = {}
-    for v in set(re.findall(r'php-(\d+\.\d+\.\d+)-fpm-linux-x86_64\.tar\.gz', listing)):
+    for v in php_builds():
         m = minor(v)
         if m not in found or vkey(v) > vkey(found[m]):
             found[m] = v
-    found = dict(sorted(found.items(), key=lambda kv: vkey(kv[0])))
-    CACHE.mkdir(parents=True, exist_ok=True)
-    (CACHE / 'available.json').write_text(json.dumps(found))
-    return found
+    return dict(sorted(found.items(), key=lambda kv: vkey(kv[0])))
 
 
 # ------------------------------------------------------------------ install
@@ -342,10 +348,11 @@ def install(spec):
 
 
 def _install(spec):
-    avail = available(max_age=0)
-    full = spec if spec.count('.') == 2 else avail.get(spec)
-    if not full or minor(full) not in avail:
-        die(f"no prebuilt PHP {spec}. Available: {', '.join(avail.values())}")
+    builds = php_builds()
+    full = spec if spec.count('.') == 2 else available().get(spec)
+    if full not in builds:
+        die(f"no prebuilt PHP {spec} in pxm's list. Available: {', '.join(available().values())}. "
+            f"For another version: pxm php build {spec}")
     dest = PHPS / full
     if (dest / 'bin/php').exists():
         print(f'PHP {full} is already installed.')
@@ -357,7 +364,7 @@ def _install(spec):
             for kind in ('cli', 'fpm'):
                 url = f'{BUILDS}php-{full}-{kind}-linux-x86_64.tar.gz'
                 tgz = tmp / f'{kind}.tgz'
-                download(url, tgz)
+                download(url, tgz, builds[full][kind])
                 with tarfile.open(tgz) as t:
                     for m in t.getmembers():
                         if m.isfile() and os.path.basename(m.name) in ('php', 'php-fpm'):
@@ -377,7 +384,7 @@ def _install(spec):
         use(minor(full))
 
 
-def uninstall(spec):
+def uninstall_php(spec):
     targets = [v for v in installed() if v == spec or minor(v) == spec]
     if not targets:
         die(f'PHP {spec} is not installed.')
@@ -427,6 +434,10 @@ def unisolate(path=None):
 # ------------------------------------------------------------------ full builds (static-php-cli)
 SPC = DATA / 'spc/spc'
 SPC_WORK = DATA / 'spc/work'
+# A fixed static-php-cli release, checked against its digest before it runs (nightly builds change under the same URL).
+SPC_VERSION = '2.8.5'
+SPC_URL = f'https://github.com/crazywhalecc/static-php-cli/releases/download/{SPC_VERSION}/spc-linux-x86_64.tar.gz'
+SPC_SHA256 = '523ba4279c54c7a377156c0dd3a36adf92ee64b01e9a7f5e9e2ec084b8e458e5'
 FULL_EXTENSIONS = ('bcmath,bz2,calendar,ctype,curl,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,intl,mbstring,'
                    'mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,'
                    'readline,redis,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,'
@@ -514,11 +525,20 @@ def build(spec, foreground=False):
             raise RuntimeError(f'spc {args[0]} failed (see log)')
 
     try:
-        if not SPC.exists():
-            step('Downloading the build tool…')
+        stamp = SPC.with_name('spc.version')
+        if not SPC.exists() or not stamp.exists() or stamp.read_text().strip() != SPC_VERSION:
+            step(f'Downloading the build tool (static-php-cli {SPC_VERSION})…')
             SPC.parent.mkdir(parents=True, exist_ok=True)
-            download('https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-linux-x86_64', SPC)
+            tgz = SPC.with_name('spc.tar.gz')
+            download(SPC_URL, tgz, SPC_SHA256)
+            with tarfile.open(tgz) as t:
+                m = t.getmember('spc')
+                m.name = SPC.name
+                t.extract(m, SPC.parent, filter='data')
+            tgz.unlink()
             SPC.chmod(0o755)
+            stamp.write_text(SPC_VERSION + '\n')
+            shutil.rmtree(SPC_WORK / 'pkgroot', ignore_errors=True)   # re-run doctor for the new tool
         if not (SPC_WORK / 'pkgroot').exists():
             step('Preparing the build tool…')
             run(['doctor', '--auto-fix'])
@@ -2183,7 +2203,7 @@ def setup(sites_dir=None, services=None, assume_yes=False):
     for full, d in installed().items():          # keep each version's FPM settings in step with this pxm
         write_version_config(d, full)
     if not installed():
-        avail = available(max_age=0)
+        avail = available()
         latest = max(avail, key=vkey) if avail else None
         if latest:
             try:
@@ -2358,7 +2378,7 @@ def status():
         'node': node_status(site_map),
         'share_domain': cfg.get('share_domain') or '',
         'caddy': systemctl('is-active', 'pxm-caddy.service').stdout.strip(),
-        'available': [{'minor': m, 'version': v, 'installed': v in installed()} for m, v in available().items()],
+        'available': [{'minor': m, 'version': v, 'installed': v in installed()} for m, v in available().items()],  # from php-builds.json
         'prereleases': prereleases(),
         'buildable': BUILDABLE_MINORS,
         'building': building(),
@@ -2424,7 +2444,7 @@ def main(argv):
         elif sub == 'unisolate':
             unisolate(arg)
         elif sub == 'uninstall' and arg:
-            uninstall(arg)
+            uninstall_php(arg)
         elif sub == 'info':
             data = php_info()
             if '--json' in rest:
