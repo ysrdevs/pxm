@@ -113,9 +113,9 @@ curl -fsSL https://raw.githubusercontent.com/ysrdevs/pxm/main/install.sh | sh
 
 This puts pxm in `~/.local/lib/pxm` and runs the same `pxm setup`. On Omarchy the same line installs the
 plugin instead, so you get the bar icon and window either way. Run the line again to update. You need
-`git`, `python3` and `systemd-resolved` (the default on Ubuntu and Fedora). Sharing needs
-[cloudflared](https://pkg.cloudflare.com/), and Node versions need [mise](https://mise.jdx.dev); pxm tells
-you when one is missing.
+`git`, `python3` and `systemd-resolved` (the default on Ubuntu and Fedora). Node versions need
+[mise](https://mise.jdx.dev); pxm tells you when it's missing. Sharing needs cloudflared: where the distro
+doesn't package it, pxm downloads a fixed release from GitHub and checks its digest, like it does for PHP.
 
 ### What setup changes on your system
 

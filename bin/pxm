@@ -1095,20 +1095,48 @@ TUNNEL_CONFIG = CONF_DIR / 'cloudflared.yml'
 TUNNEL_UNIT = 'pxm-tunnel.service'
 
 
+# Debian/Ubuntu and Fedora don't package cloudflared, so pxm fetches a fixed release from GitHub and checks it.
+CF_VERSION = '2026.10.0'
+CF_SHA256 = {'x86_64': 'd33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db',
+             'aarch64': 'e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08'}
+CF_BIN = DATA / 'cloudflared' / 'cloudflared'
+
+
+def cloudflared_bin():
+    """The system cloudflared if there is one, else pxm's own copy (downloaded and verified the first time)."""
+    system = shutil.which('cloudflared')
+    if system:
+        return system
+    stamp = CF_BIN.with_name('version')
+    if CF_BIN.exists() and stamp.exists() and stamp.read_text().strip() == CF_VERSION:
+        return str(CF_BIN)
+    arch = os.uname().machine
+    if arch not in CF_SHA256:
+        die(f'cloudflared is not installed and pxm has no download for {arch}: {CLOUDFLARED_HINT}')
+    print(f'Downloading cloudflared {CF_VERSION} (about 40 MB)…', flush=True)
+    CF_BIN.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CF_BIN.with_name('cloudflared.part')
+    download(f'https://github.com/cloudflare/cloudflared/releases/download/{CF_VERSION}/'
+             f'cloudflared-linux-{"amd64" if arch == "x86_64" else "arm64"}', tmp, CF_SHA256[arch])
+    tmp.chmod(0o755)
+    os.replace(tmp, CF_BIN)
+    stamp.write_text(CF_VERSION + '\n')
+    return str(CF_BIN)
+
+
 def cloudflared(*args):
-    return subprocess.run([shutil.which('cloudflared') or 'cloudflared', *args], capture_output=True, text=True)
+    return subprocess.run([cloudflared_bin(), *args], capture_output=True, text=True)
 
 
 def share_domain_setup(domain):
     """Connect a Cloudflare domain: browser login (once), then a named tunnel for this laptop."""
-    if not shutil.which('cloudflared'):
-        die(f'cloudflared is not installed: {CLOUDFLARED_HINT}')
+    cloudflared_bin()                      # downloads it when the system has none
     domain = domain.strip().lower().removeprefix('https://').removeprefix('http://').strip('/')
     if not re.fullmatch(r'[a-z0-9-]+(\.[a-z0-9-]+)+', domain):
         die(f'"{domain}" does not look like a domain')
     if not (CF_DIR / 'cert.pem').exists():
         print(f'A browser tab will open: pick {domain} and click Authorize.', flush=True)
-        if subprocess.run([shutil.which('cloudflared'), 'tunnel', 'login']).returncode or not (CF_DIR / 'cert.pem').exists():
+        if subprocess.run([cloudflared_bin(), 'tunnel', 'login']).returncode or not (CF_DIR / 'cert.pem').exists():
             die('Cloudflare login did not finish. Try again: pxm share domain ' + domain)
     import socket
     tname = 'pxm-' + re.sub(r'[^a-z0-9-]', '-', socket.gethostname().lower())
@@ -1168,15 +1196,14 @@ def restart_tunnel(cfg):
     r = subprocess.run(['systemd-run', '--user', '--quiet', '--collect', f'--unit={TUNNEL_UNIT}',
                         '-p', 'Restart=on-failure', '-p', 'RestartSec=3',
                         '-p', f'StandardOutput=append:{log}', '-p', f'StandardError=append:{log}',
-                        shutil.which('cloudflared'), 'tunnel', '--no-autoupdate', '--config', str(TUNNEL_CONFIG), 'run'],
+                        cloudflared_bin(), 'tunnel', '--no-autoupdate', '--config', str(TUNNEL_CONFIG), 'run'],
                        capture_output=True, text=True)
     if r.returncode:
         die(f'could not start the tunnel: {r.stderr.strip()}')
 
 
 def share(name=None, quick=False):
-    if not shutil.which('cloudflared'):
-        die(f'cloudflared is not installed: {CLOUDFLARED_HINT}')
+    cloudflared_bin()                      # downloads it when the system has none
     site_name, s = find_site(name)
     if is_phpmyadmin(s['path']):
         die(f'{site_name}.test is phpMyAdmin, which logs in automatically as root. Sharing it would let anyone '
@@ -1223,7 +1250,7 @@ def share(name=None, quick=False):
                             '-p', 'Restart=on-failure', '-p', 'RestartSec=3',
                             '-p', f'StandardOutput=append:{share_log(site_name)}',
                             '-p', f'StandardError=append:{share_log(site_name)}',
-                            shutil.which('cloudflared'), 'tunnel', '--no-autoupdate',
+                            cloudflared_bin(), 'tunnel', '--no-autoupdate',
                             '--url', f'http://127.0.0.1:{ports[site_name]}'],
                            capture_output=True, text=True)
         if r.returncode:
