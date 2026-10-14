@@ -2267,15 +2267,26 @@ def choose_engine(cfg, answer=None):
     return answer, answer not in found
 
 
-def choose_services(answer=None, eng=None):
-    """'mysql mailpit' / 'mysql,mailpit' / 'all' / 'none' -> ['mysql', 'mailpit']"""
+def choose_services(answer=None, eng=None, cfg=None):
+    """'mysql mailpit' / 'mysql,mailpit' / 'all' / 'none' -> ['mysql', 'mailpit']. Interactively, only the services
+    that don't exist yet are offered; the ones already set up are listed instead."""
     if answer is None:
         if not sys.stdin.isatty():
             return []
+        have = {s['id']: s for s in services_status(cfg or load_config()) if s['id'] in SERVICE_CHOICES}
+        done = [sid for sid, s in have.items() if s['created'] and s['managed']]
+        if done:
+            print('\n   Already set up: ' + ', '.join(
+                f"{SERVICE_CHOICES[s]} ({'running' if have[s]['up'] else 'stopped'})" for s in done))
+        todo = {k: v for k, v in SERVICE_CHOICES.items() if k not in done and have.get(k, {}).get('managed', True)}
+        if not todo:
+            return []
         print(f'\nPick the services you want now; the rest can be switched on any time from the bar or the pxm window')
         print(f'(the first start downloads it with {ENGINES.get(eng, "Docker")}, about a minute).')
-        print('  ' + '   '.join(f'{k} ({v})' for k, v in SERVICE_CHOICES.items()))
+        print('  ' + '   '.join(f'{k} ({v})' for k, v in todo.items()))
         answer = ask('Which ones? e.g. "mysql mailpit", "all" or "none"', 'none')
+        if 'all' in re.split(r'[\s,]+', answer.strip().lower()):
+            return list(todo)
     words = re.split(r'[\s,]+', answer.strip().lower())
     if 'all' in words:
         return list(SERVICE_CHOICES)
@@ -2307,7 +2318,7 @@ def setup(sites_dir=None, services=None, assume_yes=False, engine_opt=None):
         chosen = ask('Sites folder', default_sites_dir().replace(str(HOME), '~'))
     sd = Path(os.path.expanduser(chosen)).resolve()
     eng, install_engine = choose_engine(cfg, engine_opt)
-    picked = choose_services(services, eng) if eng else []
+    picked = choose_services(services, eng, cfg) if eng else []
     if services and not eng:
         warn('no container tool was chosen, so no services were set up')
 
