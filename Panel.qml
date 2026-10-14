@@ -616,7 +616,8 @@ Panel {
               }
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: modelData.up ? "running · :" + modelData.port
+                text: modelData.managed === false ? "running here, outside pxm · :" + modelData.port
+                      : modelData.up ? "running · :" + modelData.port
                       : modelData.created === false ? "first start downloads it" : "stopped · :" + modelData.port
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
               }
@@ -633,6 +634,7 @@ Panel {
                 onClicked: { root.launch(root.q(root.pxm) + " open " + root.q(modelData.url)); root.close() }
               }
               ToggleSwitch {
+                visible: modelData.managed !== false
                 anchors.verticalCenter: parent.verticalCenter
                 checked: modelData.up
                 busy: root.svcBusy === modelData.id

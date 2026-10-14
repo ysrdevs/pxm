@@ -3,7 +3,8 @@
 
 Setup
   pxm setup                         one-time setup (asks for your password once)
-      [--sites-dir DIR] [--services "mysql mailpit"|all|none] [--yes]   answer setup's questions up front
+      [--sites-dir DIR] [--engine docker|podman|none] [--services "mysql mailpit"|all|none] [--yes]
+                                 answer setup's questions up front
   pxm doctor                        check that everything is in place
   pxm uninstall [--purge]           undo setup (--purge also deletes PHP versions and settings)
 
@@ -102,20 +103,38 @@ PLUGIN_ID = 'pxm'
 LINK = HOME / '.local/bin/pxm'             # `pxm` on PATH (created by pxm setup)
 SERVICES = [  # id, name, port, url to open (or None), how it runs
     ('web', 'Web server (Caddy)', 443, None, 'systemd:pxm-caddy.service'),
-    ('mysql', 'MySQL', 3306, None, 'docker:mysql8'),
-    ('postgres', 'PostgreSQL', 5432, None, 'docker:postgres18'),
-    ('redis', 'Redis', 6379, None, 'docker:redis'),
-    ('mailpit', 'Mailpit', 8025, 'http://localhost:8025', 'docker:mailpit'),
+    ('mysql', 'MySQL', 3306, None, 'container:mysql8'),
+    ('postgres', 'PostgreSQL', 5432, None, 'container:postgres18'),
+    ('redis', 'Redis', 6379, None, 'container:redis'),
+    ('mailpit', 'Mailpit', 8025, 'http://localhost:8025', 'container:mailpit'),
 ]
-# How each container is created the first time it's started. Same names and settings as Omarchy's
-# Install > Development > Docker DB menu, so containers made there are picked up too.
-DOCKER_RUN = {
+# How each container is created the first time it's started, with Docker or Podman. Same names and settings
+# as Omarchy's Install > Development > Docker DB menu, so containers made there are picked up too.
+# Image names are fully qualified because Podman would otherwise ask which registry to use.
+CONTAINER_RUN = {
     'mysql8': ['-p', '127.0.0.1:3306:3306', '-e', 'MYSQL_ROOT_PASSWORD=', '-e', 'MYSQL_ALLOW_EMPTY_PASSWORD=true',
-               'mysql:8.4'],
-    'postgres18': ['-p', '127.0.0.1:5432:5432', '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', 'postgres:18'],
-    'redis': ['-p', '127.0.0.1:6379:6379', 'redis:7'],
-    'mailpit': ['-p', '127.0.0.1:1025:1025', '-p', '127.0.0.1:8025:8025', 'axllent/mailpit'],
+               'docker.io/library/mysql:8.4'],
+    'postgres18': ['-p', '127.0.0.1:5432:5432', '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', 'docker.io/library/postgres:18'],
+    'redis': ['-p', '127.0.0.1:6379:6379', 'docker.io/library/redis:7'],
+    'mailpit': ['-p', '127.0.0.1:1025:1025', '-p', '127.0.0.1:8025:8025', 'docker.io/axllent/mailpit'],
 }
+ENGINES = {'docker': 'Docker', 'podman': 'Podman'}   # container tools pxm can use, in order of preference
+
+
+def engines_found():
+    return [e for e in ENGINES if shutil.which(e)]
+
+
+def engine(cfg=None):
+    """The container tool that runs the services: the one chosen at setup, else the first one installed."""
+    cfg = cfg if cfg is not None else load_config()
+    chosen = cfg.get('engine')
+    if chosen == 'none':
+        return None
+    if chosen in ENGINES and shutil.which(chosen):
+        return chosen
+    found = engines_found()
+    return found[0] if found else None
 
 DEFAULT_CONFIG = {'sites_dir': '', 'links': {}, 'insecure': []}
 CADDYFILE = CONF_DIR / 'Caddyfile'
@@ -868,32 +887,40 @@ SERVICE_INFO = {
 }
 
 
-def docker_containers():
-    """Names of all containers, or None when Docker can't be asked without a password (or isn't running:
-    asking would wake the daemon up on every status poll)."""
-    if not shutil.which('docker') or subprocess.run(['systemctl', 'is-active', '--quiet', 'docker.service']).returncode:
+def containers(eng):
+    """Names of all containers, or None when the tool can't be asked: Docker without the group needs a password,
+    and a stopped Docker daemon would be woken by every status poll."""
+    if not eng:
+        return None
+    if eng == 'docker' and subprocess.run(['systemctl', 'is-active', '--quiet', 'docker.service']).returncode:
         return None
     try:
-        r = subprocess.run(['docker', 'ps', '-a', '--format', '{{.Names}}'], capture_output=True, text=True, timeout=5)
+        r = subprocess.run([eng, 'ps', '-a', '--format', '{{.Names}}'], capture_output=True, text=True, timeout=5)
     except subprocess.TimeoutExpired:
         return None
     return set(r.stdout.split()) if r.returncode == 0 else None
 
 
 def services_status(cfg):
-    """Each service, running or not, and whether its container exists yet (pxm remembers the ones it has seen,
-    since Omarchy keeps you out of the docker group and Docker can't always be asked)."""
+    """Each service: running or not, whether its container exists yet (pxm remembers the ones it has seen, since
+    Omarchy keeps you out of the docker group and Docker can't always be asked), and whether pxm manages it.
+    Something already listening on a service's port that isn't pxm's container (MySQL installed from the distro,
+    say) is shown as running but not managed."""
+    eng = engine(cfg)
     seen = set(cfg.get('containers', []))
-    existing = docker_containers()
+    existing = containers(eng)
     out = []
     for sid, name, port, url, how in SERVICES:
         kind, target = how.split(':', 1)
         up = port_open(port)
-        created = kind == 'systemd' or up or target in seen or (existing is not None and target in existing)
-        if kind == 'docker' and created:
+        known = target in seen or (existing is not None and target in existing)
+        # when Docker can't be asked, an open port is taken to be pxm's container, as it was before
+        native = kind == 'container' and up and not known and (eng is None or existing is not None)
+        created = kind == 'systemd' or known or (up and not native)
+        if kind == 'container' and created:
             seen.add(target)
         out.append({'id': sid, 'name': name, 'port': port, 'url': url, 'up': up, 'created': created,
-                    **service_info(sid, cfg)})
+                    'managed': not native, **service_info(sid, cfg)})
     if seen != set(cfg.get('containers', [])):
         cfg['containers'] = sorted(seen)
         save_config(cfg)
@@ -922,18 +949,38 @@ def find_service(name):
     die(f"unknown service {name!r}. Services: {', '.join(s[0] for s in SERVICES)}")
 
 
-def docker_sh(script):
-    """Run a docker shell snippet. Omarchy keeps users out of the docker group by default (it's root-equivalent),
-    so when the socket refuses us, run it through one admin prompt instead."""
-    if not shutil.which('docker'):
-        die('this service runs in Docker, which is not installed (Omarchy: Install > Development > Docker; '
-            'elsewhere install the docker package and enable docker.service)')
-    r = subprocess.run(['docker', 'info', '--format', '{{.ID}}'], capture_output=True, text=True)
-    if r.returncode and 'permission denied' in (r.stderr or '').lower():
-        return subprocess.run(['pkexec', 'sh', '-c', script], capture_output=True, text=True)
-    if r.returncode:
-        die('Docker is not running: sudo systemctl enable --now docker')
+def engine_sh(script):
+    """Run a shell snippet with `{eng}` replaced by the container tool. Omarchy keeps users out of the docker
+    group by default (it's root-equivalent), so when Docker's socket refuses us, run it through one admin prompt."""
+    eng = engine()
+    if not eng:
+        die('the services run in containers, and neither Docker nor Podman is installed. Run: pxm setup')
+    script = script.replace('{eng}', eng)
+    if eng == 'docker':
+        r = subprocess.run(['docker', 'info', '--format', '{{.ID}}'], capture_output=True, text=True)
+        if r.returncode and 'permission denied' in (r.stderr or '').lower():
+            return subprocess.run([*root_argv(), 'sh', '-c', script], capture_output=True, text=True)
+        if r.returncode:
+            die('Docker is not running: sudo systemctl enable --now docker')
     return subprocess.run(['sh', '-c', script], capture_output=True, text=True)
+
+
+def set_service_on(sid, on):
+    """Remember which container services should be running, so `pxm service resume` brings them back at login
+    (Podman has no daemon to restart them; Docker does it itself, and starting twice is harmless)."""
+    cfg = load_config()
+    wanted = set(cfg.get('services_on', []))
+    (wanted.add if on else wanted.discard)(sid)
+    cfg['services_on'] = sorted(wanted)
+    save_config(cfg)
+
+
+def resume_services():
+    cfg = load_config()
+    for sid in cfg.get('services_on', []):
+        s = next((s for s in SERVICES if s[0] == sid), None)
+        if s and not port_open(s[2]):
+            engine_sh(f'{{eng}} start {s[4].split(":", 1)[1]}')
 
 
 def service(action, name):
@@ -950,15 +997,19 @@ def service(action, name):
             systemctl('enable', '--now', 'pxm-sites.path')
             apply(quiet=True)
     else:
+        current = next((s for s in services_status(load_config()) if s['id'] == sid), None)
+        if current and not current['managed']:
+            die(f'{label} is already running on this computer outside pxm (port {port}); pxm leaves it alone')
         if action == 'start':
             # first start: create the container (downloading the image can take a minute)
-            create = shlex.join(['docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *DOCKER_RUN[target]])
-            r = docker_sh(f'docker start {target} >/dev/null 2>&1 && echo started || {create}')
+            create = f'{{eng}} run -d --restart unless-stopped --name {target} {shlex.join(CONTAINER_RUN[target])}'
+            r = engine_sh(f'{{eng}} start {target} >/dev/null 2>&1 && echo started || {create}')
         else:
-            r = docker_sh(f'docker stop {target}')
+            r = engine_sh(f'{{eng}} stop {target}')
         if r.returncode:
             out = (r.stderr or r.stdout).strip().splitlines()
             die(f'could not {action} {label}: {out[-1] if out else "unknown error"}')
+        set_service_on(sid, action == 'start')
         if action == 'start':
             remember_container(target)
             if 'started' not in r.stdout:
@@ -1841,7 +1892,7 @@ SYSTEM_UNIT_DIR = Path('/etc/systemd/system')
 NM_CONF = Path('/etc/NetworkManager/conf.d/50-pxm-unmanaged.conf')
 SYSCTL_CONF = Path('/etc/sysctl.d/50-pxm-web-ports.conf')
 USER_UNIT_DIR = HOME / '.config/systemd/user'
-USER_UNITS = ['pxm-caddy.service', 'pxm-fpm@.service', 'pxm-sites.path', 'pxm-sites.service']
+USER_UNITS = ['pxm-caddy.service', 'pxm-fpm@.service', 'pxm-sites.path', 'pxm-sites.service', 'pxm-services.service']
 SHELL_RCS = [HOME / '.bashrc', HOME / '.zshrc']
 HYPR_CONF = HOME / '.config/hypr/hyprland.lua'
 BLOCK_BEGIN = '>>> pxm (managed by pxm setup, removed by pxm uninstall) >>>'
@@ -1952,6 +2003,17 @@ Description=pxm: refresh *.test sites
 [Service]
 Type=oneshot
 ExecStart={LINK} apply --quiet
+""",
+        'pxm-services.service': f"""[Unit]
+Description=pxm: start the services that were switched on
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart={LINK} service resume
+
+[Install]
+WantedBy=default.target
 """,
     }
 
@@ -2119,8 +2181,20 @@ def root_main(action, args=()):
         sh(*CA_UPDATE)
         print('   ✓ HTTPS certificate trusted system-wide', flush=True)
         wanted = [x for x in (args[args.index('--services') + 1] if '--services' in args else '').split(',') if x]
-        containers = set()
-        if shutil.which('docker'):
+        eng = args[args.index('--engine') + 1] if '--engine' in args else ''
+        if '--install-engine' in args and eng in ENGINES:
+            print(f'   Installing {ENGINES[eng]}…', flush=True)
+            pkg = {'apt-get': {'docker': 'docker.io'}, 'dnf': {'docker': 'moby-engine'}}.get(PM, {}).get(eng, eng)
+            if PM == 'pacman':
+                sh('pacman', '-S', '--needed', '--noconfirm', pkg)
+            elif PM == 'apt-get':
+                sh('apt-get', 'install', '-y', '-qq', pkg)
+            elif PM == 'dnf':
+                sh('dnf', 'install', '-y', '-q', pkg)
+            if eng == 'docker':
+                sh('systemctl', 'enable', '--now', 'docker.service')
+        names = set()
+        if eng == 'docker' and shutil.which('docker'):   # Docker needs root here; Podman containers are made as the user
             for sid, label, port, url, how in SERVICES:
                 target = how.split(':', 1)[1]
                 if sid not in wanted:
@@ -2129,7 +2203,7 @@ def root_main(action, args=()):
                     print(f'   ✓ {label} is running', flush=True)
                     continue
                 print(f'   Downloading {label} (first time only, about a minute)…', flush=True)
-                r = sh('docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *DOCKER_RUN[target],
+                r = sh('docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *CONTAINER_RUN[target],
                        check=False, quiet=True)
                 if r.returncode:
                     lines = (r.stderr or r.stdout).strip().splitlines()
@@ -2137,12 +2211,12 @@ def root_main(action, args=()):
                 else:
                     print(f'   ✓ {label} is running', flush=True)
             r = sh('docker', 'ps', '-a', '--format', '{{.Names}}', check=False, quiet=True)
-            containers = set(r.stdout.split()) & {how.split(':', 1)[1] for _, _, _, _, how in SERVICES}
+            names = set(r.stdout.split()) & {how.split(':', 1)[1] for _, _, _, _, how in SERVICES}
         report = root_report_path(user.pw_uid)
         report.unlink(missing_ok=True)
         fd = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as f:
-            f.write(json.dumps({'containers': sorted(containers)}))
+            f.write(json.dumps({'containers': sorted(names)}))
         os.chown(report, user.pw_uid, user.pw_gid)
     elif action == 'uninstall':
         sh('systemctl', 'disable', '--now', 'pxm-dns-route.service', 'pxm-dns.service', check=False, quiet=True)
@@ -2165,13 +2239,41 @@ def root_main(action, args=()):
 SERVICE_CHOICES = {'mysql': 'MySQL', 'postgres': 'PostgreSQL', 'redis': 'Redis', 'mailpit': 'Mailpit'}
 
 
-def choose_services(answer=None):
+def choose_engine(cfg, answer=None):
+    """Docker or Podman for the services, asked interactively unless `answer` is given (docker/podman/none).
+    Returns (engine or None, whether it still has to be installed)."""
+    found = engines_found()
+    native = [s['name'] for s in services_status(cfg) if not s['managed']]
+    print('\nMySQL, PostgreSQL, Redis and Mailpit run in containers.')
+    if native:
+        print(f"   Already running on this computer, outside pxm: {', '.join(native)}. pxm shows them but leaves them alone.")
+    if answer is None:
+        if len(found) == 2:
+            print('   Docker and Podman are both installed.')
+            answer = ask('Which one should pxm use? (docker/podman)', cfg.get('engine') if cfg.get('engine') in found else 'docker')
+        elif found:
+            print(f'   {ENGINES[found[0]]} is installed; pxm will use it for the services.')
+            answer = found[0]
+        else:
+            print('   Neither Docker nor Podman is installed. Podman runs containers without admin rights;'
+                  ' Docker is what Omarchy uses.')
+            answer = ask('Install docker, install podman, or none (skip the services)?', 'docker' if PM == 'pacman' else 'podman')
+    answer = (answer or '').strip().lower()
+    if answer in ('none', 'skip', 'no', 'n', ''):
+        return None, False
+    if answer not in ENGINES:
+        warn(f'unknown choice "{answer}"; skipping the services')
+        return None, False
+    return answer, answer not in found
+
+
+def choose_services(answer=None, eng=None):
     """'mysql mailpit' / 'mysql,mailpit' / 'all' / 'none' -> ['mysql', 'mailpit']"""
     if answer is None:
         if not sys.stdin.isatty():
             return []
-        print('\nDatabases and mail run in Docker. Pick the ones you want now; the rest can be switched on any time')
-        print('from the bar or the pxm window (the first start downloads it, about a minute).')
+        print(f'\nPick the services you want now; the rest can be switched on any time from the bar or the pxm window')
+        print(f'(the first start downloads it with {ENGINES.get(eng, "Docker")}, about a minute).')
         print('  ' + '   '.join(f'{k} ({v})' for k, v in SERVICE_CHOICES.items()))
         answer = ask('Which ones? e.g. "mysql mailpit", "all" or "none"', 'none')
     words = re.split(r'[\s,]+', answer.strip().lower())
@@ -2188,7 +2290,7 @@ def choose_services(answer=None):
     return picked
 
 
-def setup(sites_dir=None, services=None, assume_yes=False):
+def setup(sites_dir=None, services=None, assume_yes=False, engine_opt=None):
     print(f'pxm {version()} setup')
     if not PM:
         die('pxm needs a Linux with pacman, apt or dnf (Arch/Omarchy, Debian/Ubuntu or Fedora)')
@@ -2204,14 +2306,17 @@ def setup(sites_dir=None, services=None, assume_yes=False):
         print('\nEvery folder in your sites folder becomes https://<folder>.test')
         chosen = ask('Sites folder', default_sites_dir().replace(str(HOME), '~'))
     sd = Path(os.path.expanduser(chosen)).resolve()
-    picked = choose_services(services) if shutil.which('docker') else []
-    if services and not shutil.which('docker'):
-        warn('Docker is not installed, so no services were set up (install docker and run pxm setup again)')
+    eng, install_engine = choose_engine(cfg, engine_opt)
+    picked = choose_services(services, eng) if eng else []
+    if services and not eng:
+        warn('no container tool was chosen, so no services were set up')
 
     missing = missing_packages()
     print('\npxm setup will:')
     if missing:
         print(f"  - install {', '.join(missing)} with {PM.split('-')[0]}")
+    if install_engine:
+        print(f"  - install {ENGINES[eng]} with {PM.split('-')[0]}" + (' and start its service' if eng == 'docker' else ''))
     if system_caddy_enabled():
         print('  - turn off the system-wide Caddy service (pxm runs its own Caddy as you, on ports 80 and 443)')
     print('  - point *.test addresses at this computer, and let the web server use ports 80 and 443')
@@ -2220,18 +2325,20 @@ def setup(sites_dir=None, services=None, assume_yes=False):
                                                         if HYPR_CONF.exists() else ''))
     print(f"  - serve every folder in {str(sd).replace(str(HOME), '~')} and download the latest PHP if you have none")
     if picked:
-        print(f"  - download and start {', '.join(SERVICE_CHOICES[x] for x in picked)} in Docker")
+        print(f"  - download and start {', '.join(SERVICE_CHOICES[x] for x in picked)} with {ENGINES[eng]}")
     print('`pxm uninstall` undoes all of this. The full list is in the README.')
     if not assume_yes and ask('Continue?', 'yes').lower() not in ('y', 'yes'):
         print('Nothing changed.')
         return
     sd.mkdir(parents=True, exist_ok=True)
     cfg['sites_dir'] = str(sd)
+    cfg['engine'] = eng or 'none'
     save_config(cfg)
 
     step('System settings (asks for your password once)' + (' and ' + ', '.join(SERVICE_CHOICES[x] for x in picked)
-                                                              if picked else ''))
-    run_root('setup', '--services', ','.join(picked))
+                                                              if picked and eng == 'docker' else ''))
+    run_root('setup', '--services', ','.join(picked), '--engine', eng or 'none',
+             *(['--install-engine'] if install_engine else []))
     report = root_report_path(os.getuid())
     try:
         found = json.loads(report.read_text()).get('containers', [])
@@ -2242,12 +2349,24 @@ def setup(sites_dir=None, services=None, assume_yes=False):
         cfg = load_config()
         cfg['containers'] = sorted(set(cfg.get('containers', [])) | set(found))
         save_config(cfg)
+    if picked and eng == 'docker':
+        for sid in picked:
+            set_service_on(sid, True)
+    elif picked and eng == 'podman':                 # rootless: the containers belong to you, so make them as you
+        step('Services (Podman)')
+        for sid in picked:
+            try:
+                service('start', sid)
+                ok(f'{SERVICE_CHOICES[sid]} is running')
+            except SystemExit:
+                warn(f'{SERVICE_CHOICES[sid]} could not be started; try again later from the bar or: pxm service start {sid}')
 
     step('Web server and PHP')
     USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
     for name, text in user_units(cfg).items():
         (USER_UNIT_DIR / name).write_text(text)
     systemctl('daemon-reload')
+    systemctl('enable', 'pxm-services.service')      # at login: restart the services that were switched on
     LINK.parent.mkdir(parents=True, exist_ok=True)
     if LINK.is_symlink() or not LINK.exists():
         LINK.unlink(missing_ok=True)
@@ -2417,7 +2536,7 @@ def uninstall(purge=False, assume_yes=False):
   - The bar icon and window are an Omarchy plugin: omarchy plugin remove pxm""" if shutil.which('omarchy') else f"""
   - The pxm code is still in {PLUGIN_DIR}; delete that folder to remove it""") + f"""
   - Packages were kept (other apps may use them): {' '.join(PACKAGES)}
-  - Docker containers (your databases) were kept: mysql8, postgres18, redis, mailpit""" + (f"""
+  - Containers (your databases) were kept: mysql8, postgres18, redis, mailpit""" + (f"""
   - Your Cloudflare tunnel {tunnel} still exists: cloudflared tunnel delete {tunnel}""" if tunnel else ''))
 
 
@@ -2449,7 +2568,8 @@ def status():
         'building': building(),
         'installing': sorted(p.name.removeprefix('installing-') for p in CACHE.glob('installing-*')) if CACHE.exists() else [],
         'services': services_status(cfg),
-        'docker': shutil.which('docker') is not None,
+        'engine': engine(cfg),                       # 'docker' | 'podman' | null
+        'docker': engine(cfg) is not None,
         'trusted': (NSSDB / 'cert9.db').exists() and subprocess.run(
             ['certutil', '-L', '-d', f'sql:{NSSDB}', '-n', CA_NAME], capture_output=True).returncode == 0,
     }
@@ -2469,7 +2589,8 @@ def main(argv):
     if cmd == 'setup':
         def opt(name):
             return next((rest[i + 1] for i, a in enumerate(rest) if a == name and i + 1 < len(rest)), None)
-        return setup(opt('--sites-dir'), opt('--services'), assume_yes='--yes' in rest or '-y' in rest)
+        return setup(opt('--sites-dir'), opt('--services'), assume_yes='--yes' in rest or '-y' in rest,
+                     engine_opt=opt('--engine'))
     if cmd == 'doctor':
         return doctor()
     if cmd == 'uninstall':
@@ -2596,6 +2717,8 @@ def main(argv):
                 print(f"  {i:9} {n:20} {'running' if port_open(port) else 'stopped':8} :{port}")
         elif sub in ('start', 'stop') and len(rest) > 1:
             service(sub, rest[1])
+        elif sub == 'resume':                      # at login (pxm-services.service): bring back the ones switched on
+            resume_services()
         else:
             die('usage: pxm service list | start <name> | stop <name>')
     elif cmd == 'node':

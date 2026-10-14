@@ -48,11 +48,13 @@ and give any site a public link to show someone.
   `*.trycloudflare.com` links need no account. With your own Cloudflare domain, links look like
   `https://<site>.yourdomain.com` and stay the same every time. pxm warns you when debug mode is on, and it
   refuses to share phpMyAdmin.
-- **Services.** MySQL, PostgreSQL, Redis and Mailpit run in Docker. Pick the ones you want during setup,
-  or switch one on later and pxm downloads it then (about a minute, the first time only). The containers
-  use the same names and settings as Omarchy's *Install > Development > Docker DB* menu, so containers made
-  there are picked up too. The window shows the connection details and the `.env`
-  lines for each service.
+- **Services.** MySQL, PostgreSQL, Redis and Mailpit run in containers, with Docker or Podman. Setup
+  uses whichever is installed, asks if both are, and offers to install one (or skip the services) if
+  neither is. Pick the services you want during setup, or switch one on later and pxm downloads it then
+  (about a minute, the first time only). The containers use the same names and settings as Omarchy's
+  *Install > Development > Docker DB* menu, so containers made there are picked up too. A MySQL, PostgreSQL
+  or Redis you already run outside pxm is shown as running and left alone. The window shows the connection
+  details and the `.env` lines for each service.
 - **Mail.** Mailpit catches every email your apps send. The window shows the SMTP settings and can send a
   test email.
 - **Logs.** See the latest Laravel and PHP errors for a site in one place.
@@ -62,8 +64,10 @@ and give any site a public link to show someone.
 
 ## Requirements
 
-- Omarchy 4 (Arch Linux, Hyprland, systemd-resolved)
-- Docker, if you want the database and mail services (Omarchy ships it)
+- Omarchy 4 (Arch Linux, Hyprland, systemd-resolved), or Debian 12+, Ubuntu 24.04+ or Fedora for the
+  command-line version (see *Other Linux* below)
+- Docker or Podman, if you want the database and mail services (Omarchy ships Docker; setup can install
+  either)
 
 `pxm setup` installs everything else from the Arch repos: `caddy`, `dnsmasq`, `nss`, `cloudflared`, `php`,
 `php-fpm` and `composer`.

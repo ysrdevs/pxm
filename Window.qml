@@ -768,9 +768,9 @@ Item {
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
       }
       Text {
-        visible: root.st.docker === false
+        visible: root.st.engine === null
         width: parent.inner; wrapMode: Text.WordWrap
-        text: "\uf071  MySQL, PostgreSQL, Redis and Mailpit run in Docker, which isn't installed. Install it with: sudo pacman -S docker && sudo systemctl enable --now docker"
+        text: "\uf071  MySQL, PostgreSQL, Redis and Mailpit run in containers, and neither Docker nor Podman is installed. Run `pxm setup` in a terminal to install one."
         color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption
       }
 
@@ -798,10 +798,11 @@ Item {
                 spacing: Style.space(8)
                 Text { text: "●"; color: svcCard.modelData.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                 Text { text: svcCard.modelData.name; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-                Text { text: svcCard.modelData.up ? "running" : svcCard.modelData.created === false ? "not downloaded yet" : "stopped"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: svcCard.modelData.managed === false ? "running on this computer, outside pxm" : svcCard.modelData.up ? "running" : svcCard.modelData.created === false ? "not downloaded yet" : "stopped"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
               }
               ToggleSwitch {
                 id: svcToggle
+                visible: svcCard.modelData.managed !== false
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 checked: svcCard.modelData.up
