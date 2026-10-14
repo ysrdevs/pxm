@@ -169,7 +169,8 @@ apps may use them.
 ## How it works
 
 - **Web server.** [Caddy](https://caddyserver.com) runs as your user. pxm writes its config from your sites
-  folder, and a systemd path unit notices new folders straight away.
+  folder, and a systemd path unit notices new folders straight away. Dotfiles and dot-folders (`.env`,
+  `.git`, …) are never served, even for sites without a `public/` folder.
 - **PHP.** Each PHP version runs its own PHP-FPM pool, and only for the versions your sites use. Quick
   versions are prebuilt by [static-php-cli](https://github.com/crazywhalecc/static-php-cli). Full builds are
   compiled on your computer with the same tool.
