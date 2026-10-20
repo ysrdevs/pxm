@@ -823,6 +823,25 @@ Item {
               text: "Switch it on to download it. The first start takes about a minute; after that it starts in seconds."
               color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
             }
+            Row {
+              visible: svcCard.modelData.open === true
+              width: parent.width
+              spacing: Style.space(10)
+              Text { textFormat: Text.PlainText;
+                width: parent.width - protectBtn.width - parent.spacing; wrapMode: Text.WordWrap
+                anchors.verticalCenter: parent.verticalCenter
+                text: "No password: anyone logged in to this computer can use it. pxm can set one"
+                      + (svcCard.modelData.id === "redis" ? " (Redis restarts and its cache is cleared)." : ".")
+                      + " Then add it to your projects' .env files."
+                color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption
+              }
+              Button {
+                id: protectBtn
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Set a password"; iconText: "󰌾"; bordered: true; foreground: root.fg; fontFamily: root.ff
+                onClicked: root.run(["service", "protect", svcCard.modelData.id], "Setting a password for " + svcCard.modelData.name + "…")
+              }
+            }
             Repeater {
               model: svcCard.modelData.details || []
               Row {

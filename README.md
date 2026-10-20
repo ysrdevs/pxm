@@ -49,10 +49,10 @@ and give any site a public link to show someone.
   `https://<site>.yourdomain.com` and stay the same every time. pxm warns you when debug mode is on, and it
   refuses to share phpMyAdmin.
 - **Services.** MySQL, PostgreSQL, Redis and Mailpit run in Docker. Pick the ones you want during setup,
-  or switch one on later and pxm downloads it then (about a minute, the first time only). The containers
-  use the same names and settings as Omarchy's *Install > Development > Docker DB* menu, so containers made
-  there are picked up too. The window shows the connection details and the `.env`
-  lines for each service.
+  or switch one on later and pxm downloads it then (about a minute, the first time only). Each database
+  gets its own random password, and the window shows the connection details and ready-made `.env` lines.
+  The containers use the same names as Omarchy's *Install > Development > Docker DB* menu, so containers
+  made there are picked up too.
 - **Mail.** Mailpit catches every email your apps send. The window shows the SMTP settings and can send a
   test email.
 - **Logs.** See the latest Laravel and PHP errors for a site in one place.
@@ -135,6 +135,7 @@ pxm link                     # serve the current folder as https://<folder>.test
 pxm share                    # public link for the current site
 pxm share domain example.com # use your own Cloudflare domain for share links
 pxm service start mysql      # first start creates the container
+pxm service info mysql       # connection details, password and .env lines
 pxm logs                     # latest errors for the current site
 pxm doctor                   # check that everything is in place
 pxm --help                   # everything else
@@ -144,13 +145,20 @@ pxm --help                   # everything else
 
 | Service | Address | Login |
 |---|---|---|
-| MySQL | `127.0.0.1:3306` | `root`, no password |
-| PostgreSQL | `127.0.0.1:5432` | `postgres`, no password |
-| Redis | `127.0.0.1:6379` | none |
+| MySQL | `127.0.0.1:3306` | `root`, password from pxm |
+| PostgreSQL | `127.0.0.1:5432` | `postgres`, password from pxm |
+| Redis | `127.0.0.1:6379` | password from pxm |
 | Mailpit SMTP | `127.0.0.1:1025` | none, inbox at http://localhost:8025 |
 
-These are for local development only: every port listens on `127.0.0.1`, so other devices on your network
-can't reach them.
+pxm makes up a password for each database when it creates the container, because a port on `127.0.0.1` is
+reachable by every account on the computer, not only yours. The Services page of the window shows it, with
+`.env` lines to copy; so does `pxm service info mysql`. The passwords live in `~/.config/pxm/config.json`,
+readable only by you.
+
+Containers made by Omarchy's Docker DB menu, or by an earlier pxm, have no password. pxm marks
+those on the Services page and offers to set one (`pxm service protect mysql`); then add it to your
+projects' `.env` files. Every port listens on `127.0.0.1` only, so other devices on your network can't reach
+them.
 
 Omarchy keeps your account out of Docker's admin group on purpose, so switching a service on or off asks
 for your password. To skip that, turn on Omarchy's sudoless Docker option and restart.

@@ -54,6 +54,8 @@ Services (Docker containers: picked during setup, or downloaded the first time y
   pxm service list                  dev services and whether they run
   pxm service start <name>          web, mysql, postgres, redis, mailpit
   pxm service stop <name>           stays stopped after a reboot
+  pxm service info <name>           connection details, password and .env lines
+  pxm service protect <name>        give a database made without a password (Omarchy's Docker DB menu) one
 
 Apps (which editor / terminal / file manager / browser pxm opens)
   pxm prefs                         show your choices and what's installed
@@ -107,17 +109,21 @@ SERVICES = [  # id, name, port, url to open (or None), how it runs
     ('redis', 'Redis', 6379, None, 'docker:redis'),
     ('mailpit', 'Mailpit', 8025, 'http://localhost:8025', 'docker:mailpit'),
 ]
-# How each container is created the first time it's started. Same names and settings as Omarchy's
-# Install > Development > Docker DB menu, so containers made there are picked up too.
+# How each container is created the first time it's started. Same names as Omarchy's Install > Development >
+# Docker DB menu, so containers made there are picked up too. pxm's own databases get a random password
+# (see env_file): a port on 127.0.0.1 is reachable by every account on the computer, not just yours.
 DOCKER_RUN = {
-    'mysql8': ['-p', '127.0.0.1:3306:3306', '-e', 'MYSQL_ROOT_PASSWORD=', '-e', 'MYSQL_ALLOW_EMPTY_PASSWORD=true',
-               'mysql:8.4'],
-    'postgres18': ['-p', '127.0.0.1:5432:5432', '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', 'postgres:18'],
-    'redis': ['-p', '127.0.0.1:6379:6379', 'redis:7'],
+    'mysql8': ['-p', '127.0.0.1:3306:3306', 'mysql:8.4'],
+    'postgres18': ['-p', '127.0.0.1:5432:5432', 'postgres:18'],
+    # the password reaches redis through a file inside the container, not its command line (visible in ps)
+    'redis': ['-p', '127.0.0.1:6379:6379', 'redis:7', 'sh', '-c',
+              'printf "requirepass %s\\n" "$REDIS_PASSWORD" > /tmp/redis.conf && exec redis-server /tmp/redis.conf'],
     'mailpit': ['-p', '127.0.0.1:1025:1025', '-p', '127.0.0.1:8025:8025', 'axllent/mailpit'],
 }
+SECRET_SERVICES = {'mysql': 'MYSQL_ROOT_PASSWORD', 'postgres': 'POSTGRES_PASSWORD', 'redis': 'REDIS_PASSWORD'}
+ENV_DIR = CONF_DIR / 'env'                 # one docker --env-file per database, readable only by you
 
-DEFAULT_CONFIG = {'sites_dir': '', 'links': {}, 'insecure': []}
+DEFAULT_CONFIG = {'sites_dir': '', 'links': {}, 'insecure': [], 'passwords': {}}
 CADDYFILE = CONF_DIR / 'Caddyfile'
 # Caddy's admin API on a socket in the user's private runtime folder, so other local users can't reach it
 # (on a TCP port they could POST a new config and read this user's files through it).
@@ -156,8 +162,16 @@ def load_config():
 def save_config(cfg):
     CONF_DIR.mkdir(parents=True, exist_ok=True)
     tmp = CONF.with_suffix('.tmp')
-    tmp.write_text(json.dumps(cfg, indent=2))
+    write_private(tmp, json.dumps(cfg, indent=2))   # holds the database passwords
     tmp.rename(CONF)
+
+
+def write_private(path, text):
+    """Write a file only its owner can read."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+    os.chmod(path, 0o600)
 
 
 def global_version():
@@ -876,12 +890,12 @@ SERVICE_INFO = {
     'web': {'details': [['Sites folder', '(set by pxm setup)'], ['Address', 'https://<folder>.test'],
                         ['Certificate', '~/.local/share/caddy/pki/authorities/local/root.crt']],
             'env': 'APP_URL=https://<your-site>.test'},
-    'mysql': {'details': [['Host', '127.0.0.1'], ['Port', '3306'], ['User', 'root'], ['Password', '(empty)']],
-              'env': 'DB_CONNECTION=mysql\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_DATABASE=laravel\nDB_USERNAME=root\nDB_PASSWORD='},
-    'postgres': {'details': [['Host', '127.0.0.1'], ['Port', '5432'], ['User', 'postgres'], ['Password', '(empty)']],
-                 'env': 'DB_CONNECTION=pgsql\nDB_HOST=127.0.0.1\nDB_PORT=5432\nDB_DATABASE=laravel\nDB_USERNAME=postgres\nDB_PASSWORD='},
-    'redis': {'details': [['Host', '127.0.0.1'], ['Port', '6379'], ['Password', '(none)']],
-              'env': 'REDIS_CLIENT=phpredis\nREDIS_HOST=127.0.0.1\nREDIS_PORT=6379\nREDIS_PASSWORD=null'},
+    'mysql': {'details': [['Host', '127.0.0.1'], ['Port', '3306'], ['User', 'root'], ['Password', '{password}']],
+              'env': 'DB_CONNECTION=mysql\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_DATABASE=laravel\nDB_USERNAME=root\nDB_PASSWORD={password}'},
+    'postgres': {'details': [['Host', '127.0.0.1'], ['Port', '5432'], ['User', 'postgres'], ['Password', '{password}']],
+                 'env': 'DB_CONNECTION=pgsql\nDB_HOST=127.0.0.1\nDB_PORT=5432\nDB_DATABASE=laravel\nDB_USERNAME=postgres\nDB_PASSWORD={password}'},
+    'redis': {'details': [['Host', '127.0.0.1'], ['Port', '6379'], ['Password', '{password}']],
+              'env': 'REDIS_CLIENT=phpredis\nREDIS_HOST=127.0.0.1\nREDIS_PORT=6379\nREDIS_PASSWORD={password}'},
     'mailpit': {'details': [['SMTP host', '127.0.0.1'], ['SMTP port', '1025'], ['Login', 'none needed'],
                             ['Encryption', 'none'], ['Inbox', 'http://localhost:8025']],
                 'env': 'MAIL_MAILER=smtp\nMAIL_SCHEME=null\nMAIL_HOST=127.0.0.1\nMAIL_PORT=1025\nMAIL_USERNAME=null\nMAIL_PASSWORD=null'},
@@ -913,6 +927,7 @@ def services_status(cfg):
         if kind == 'docker' and created:
             seen.add(target)
         out.append({'id': sid, 'name': name, 'port': port, 'url': url, 'up': up, 'created': created,
+                    'open': sid in SECRET_SERVICES and created and not service_password(sid, cfg),
                     **service_info(sid, cfg)})
     if seen != set(cfg.get('containers', [])):
         cfg['containers'] = sorted(seen)
@@ -931,7 +946,49 @@ def service_info(sid, cfg):
     info = json.loads(json.dumps(SERVICE_INFO.get(sid, {'details': [], 'env': ''})))
     if sid == 'web':
         info['details'][0][1] = str(cfg.get('sites_dir') or '').replace(str(HOME), '~')
+    if sid in SECRET_SERVICES:
+        pw = service_password(sid, cfg)
+        for d in info['details']:
+            if d[0] == 'Password':
+                d[1] = pw or '(none: anyone logged in to this computer can use it)'
+        info['env'] = info['env'].replace('{password}', pw or ('null' if sid == 'redis' else ''))
     return info
+
+
+def service_password(sid, cfg=None, create=False):
+    """The password pxm gave this database, or None for a container pxm didn't create (Omarchy's Docker DB
+    menu, or an older pxm): those run without one, until `pxm service protect`."""
+    cfg = load_config() if cfg is None else cfg
+    pw = cfg.setdefault('passwords', {}).get(sid)
+    if not pw and create:
+        import secrets
+        pw = cfg['passwords'][sid] = secrets.token_hex(12)
+        save_config(cfg)
+    return pw
+
+
+def forget_password(sid):
+    cfg = load_config()
+    if cfg.get('passwords', {}).pop(sid, None) is not None:
+        save_config(cfg)
+    (ENV_DIR / sid).unlink(missing_ok=True)
+
+
+def env_file(sid, cfg):
+    """The docker --env-file carrying this database's password (made up on first use), readable only by you."""
+    pw = service_password(sid, cfg, create=True)
+    ENV_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    f = ENV_DIR / sid
+    want = f'{SECRET_SERVICES[sid]}={pw}\n'
+    if not f.is_file() or f.read_text() != want:
+        write_private(f, want)
+    return f
+
+
+def docker_run_args(sid, target, env_dir=None):
+    """Arguments after `docker` that create this service's container."""
+    env = ['--env-file', str((env_dir or ENV_DIR) / sid)] if sid in SECRET_SERVICES else []
+    return ['run', '-d', '--restart', 'unless-stopped', '--name', target, *env, *DOCKER_RUN[target]]
 
 
 def find_service(name):
@@ -942,24 +999,24 @@ def find_service(name):
     die(f"unknown service {name!r}. Services: {', '.join(s[0] for s in SERVICES)}")
 
 
-def docker_sh(script):
+def docker_sh(script, input=None):
     """Run a docker shell snippet. Omarchy keeps users out of the docker group by default (it's root-equivalent),
     so when the socket refuses us, run it through one admin prompt instead."""
     if not shutil.which('docker'):
         die('this service runs in Docker, which is not installed: sudo pacman -S docker && sudo systemctl enable --now docker')
     r = subprocess.run(['docker', 'info', '--format', '{{.ID}}'], capture_output=True, text=True)
     if r.returncode and 'permission denied' in (r.stderr or '').lower():
-        return subprocess.run(['pkexec', 'sh', '-c', script], capture_output=True, text=True)
+        return subprocess.run(['pkexec', 'sh', '-c', script], capture_output=True, text=True, input=input)
     if r.returncode:
         die('Docker is not running: sudo systemctl enable --now docker')
-    return subprocess.run(['sh', '-c', script], capture_output=True, text=True)
+    return subprocess.run(['sh', '-c', script], capture_output=True, text=True, input=input)
 
 
 def service(action, name):
     sid, label, port, _, how = find_service(name)
     kind, target = how.split(':', 1)
+    cfg = load_config()
     if kind == 'systemd':
-        cfg = load_config()
         cfg['web_stopped'] = action == 'stop'
         save_config(cfg)
         systemctl('disable' if action == 'stop' else 'enable', '--now', target)
@@ -971,7 +1028,10 @@ def service(action, name):
     else:
         if action == 'start':
             # first start: create the container (downloading the image can take a minute)
-            create = shlex.join(['docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *DOCKER_RUN[target]])
+            had_password = sid not in SECRET_SERVICES or bool(service_password(sid, cfg))
+            if sid in SECRET_SERVICES:
+                env_file(sid, cfg)
+            create = shlex.join(['docker', *docker_run_args(sid, target)])
             r = docker_sh(f'docker start {target} >/dev/null 2>&1 && echo started || {create}')
         else:
             r = docker_sh(f'docker stop {target}')
@@ -982,6 +1042,8 @@ def service(action, name):
             remember_container(target)
             if 'started' not in r.stdout:
                 print(f'Downloaded and created {label}.', flush=True)
+            elif not had_password:
+                forget_password(sid)     # the container was already there, made without a password
     import time
     for _ in range(40 if action == 'stop' or kind == 'systemd' else 480):   # wait until the port agrees
         if port_open(port) == (action == 'start'):
@@ -989,6 +1051,64 @@ def service(action, name):
         time.sleep(0.25)
     print(f"{label} {'started' if action == 'start' else 'stopped'}"
           + (' (stays stopped after reboot)' if action == 'stop' else ''))
+
+
+def service_protect(name):
+    """Give a database that runs without a password one. Containers from Omarchy's Docker DB menu, or from
+    pxm before passwords, accept anyone who can reach 127.0.0.1, which is every account on the computer."""
+    sid, label, port, _, how = find_service(name)
+    if sid not in SECRET_SERVICES:
+        die(f'{label} has no password to set')
+    cfg = load_config()
+    if service_password(sid, cfg):
+        print(f'{label} already has a password')
+        return
+    target = how.split(':', 1)[1]
+    import secrets
+    pw = secrets.token_hex(12)
+    if sid == 'redis':
+        # requirepass can't be added to a running container: make it again (Redis holds caches, nothing to keep)
+        cfg['passwords'][sid] = pw
+        save_config(cfg)
+        env_file(sid, cfg)
+        r = docker_sh(f'docker rm -f {target} >/dev/null 2>&1; ' + shlex.join(['docker', *docker_run_args(sid, target)]))
+    else:
+        if not port_open(port):
+            service('start', sid)
+        # over TCP: while a fresh container initialises, a temporary server answers on the socket only
+        ping = 'mysqladmin ping --silent -h127.0.0.1 --protocol=tcp' if sid == 'mysql' else 'pg_isready -q -h 127.0.0.1'
+        ready = f'i=0; until docker exec {target} {ping} >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 90 ] && exit 1; sleep 1; done'
+        if sid == 'mysql':
+            r = docker_sh(f'{ready} && docker exec -i {target} mysql -uroot',
+                          input=f"ALTER USER 'root'@'localhost' IDENTIFIED BY '{pw}';\n"
+                                f"ALTER USER 'root'@'%' IDENTIFIED BY '{pw}';\nFLUSH PRIVILEGES;\n")
+        else:
+            fix_hba = shlex.quote('sed -i "s/^host all all all trust$/host all all all scram-sha-256/" "$PGDATA/pg_hba.conf"')
+            r = docker_sh(f'{ready} && docker exec -i {target} psql -U postgres -q -v ON_ERROR_STOP=1 && '
+                          f'docker exec {target} sh -c {fix_hba} && '
+                          f'docker exec {target} psql -U postgres -qtAc "select pg_reload_conf()"',
+                          input=f"ALTER USER postgres PASSWORD '{pw}';\n")
+    if r.returncode:
+        out = (r.stderr or r.stdout).strip().splitlines()
+        die(f'could not set a password for {label}: {out[-1] if out else "unknown error"}'
+            + ("\n(if you set one yourself, pxm doesn't know it; put it in your .env files by hand)" if sid != 'redis' else ''))
+    cfg = load_config()
+    cfg.setdefault('passwords', {})[sid] = pw
+    save_config(cfg)
+    env_file(sid, cfg)
+    print(f'{label} now needs a password: {pw}')
+    print(f'Add it to your projects\' .env files (the Services page of the pxm window has the lines, or: pxm service info {sid}).')
+
+
+def service_show(name):
+    sid, label, port, url, _ = find_service(name)
+    info = service_info(sid, load_config())
+    print(f"{label}: {'running' if port_open(port) else 'stopped'}")
+    for k, v in info['details']:
+        print(f'  {k:<12} {v}')
+    if info['env']:
+        print('\n.env lines:')
+        print('  ' + info['env'].replace('\n', '\n  '))
 
 
 # ------------------------------------------------------------------ share (Cloudflare quick tunnels)
@@ -2100,7 +2220,7 @@ def root_main(action, args=()):
         sh('trust', 'extract-compat')
         print('   ✓ HTTPS certificate trusted system-wide', flush=True)
         wanted = [x for x in (args[args.index('--services') + 1] if '--services' in args else '').split(',') if x]
-        containers = set()
+        containers, created = set(), set()
         if shutil.which('docker'):
             for sid, label, port, url, how in SERVICES:
                 target = how.split(':', 1)[1]
@@ -2110,12 +2230,13 @@ def root_main(action, args=()):
                     print(f'   ✓ {label} is running', flush=True)
                     continue
                 print(f'   Downloading {label} (first time only, about a minute)…', flush=True)
-                r = sh('docker', 'run', '-d', '--restart', 'unless-stopped', '--name', target, *DOCKER_RUN[target],
+                r = sh('docker', *docker_run_args(sid, target, env_dir=home / '.config/pxm/env'),
                        check=False, quiet=True)
                 if r.returncode:
                     lines = (r.stderr or r.stdout).strip().splitlines()
                     print(f"   ! could not set up {label}: {lines[-1] if lines else 'unknown error'}", flush=True)
                 else:
+                    created.add(target)
                     print(f'   ✓ {label} is running', flush=True)
             r = sh('docker', 'ps', '-a', '--format', '{{.Names}}', check=False, quiet=True)
             containers = set(r.stdout.split()) & {how.split(':', 1)[1] for _, _, _, _, how in SERVICES}
@@ -2123,7 +2244,7 @@ def root_main(action, args=()):
         report.unlink(missing_ok=True)
         fd = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as f:
-            f.write(json.dumps({'containers': sorted(containers)}))
+            f.write(json.dumps({'containers': sorted(containers), 'created': sorted(created)}))
         os.chown(report, user.pw_uid, user.pw_gid)
     elif action == 'uninstall':
         sh('systemctl', 'disable', '--now', 'pxm-dns-route.service', 'pxm-dns.service', check=False, quiet=True)
@@ -2197,7 +2318,8 @@ def setup(sites_dir=None, services=None, assume_yes=False):
     print('  - add a marked PATH block to ~/.bashrc and a marked window rule to ~/.config/hypr/hyprland.lua')
     print(f"  - serve every folder in {str(sd).replace(str(HOME), '~')} and download the latest PHP if you have none")
     if picked:
-        print(f"  - download and start {', '.join(SERVICE_CHOICES[x] for x in picked)} in Docker")
+        print(f"  - download and start {', '.join(SERVICE_CHOICES[x] for x in picked)} in Docker"
+              + (', each with its own random password' if any(x in SECRET_SERVICES for x in picked) else ''))
     print('`pxm uninstall` undoes all of this. The full list is in the README.')
     if not assume_yes and ask('Continue?', 'yes').lower() not in ('y', 'yes'):
         print('Nothing changed.')
@@ -2208,17 +2330,26 @@ def setup(sites_dir=None, services=None, assume_yes=False):
 
     step('System settings (asks for your password once)' + (' and ' + ', '.join(SERVICE_CHOICES[x] for x in picked)
                                                               if picked else ''))
+    for sid in picked:
+        if sid in SECRET_SERVICES:
+            env_file(sid, cfg)                       # the admin step reads these when it creates the containers
     run_root('setup', '--services', ','.join(picked))
     report = root_report_path(os.getuid())
     try:
-        found = json.loads(report.read_text()).get('containers', [])
+        data = json.loads(report.read_text())
+        found, created = data.get('containers', []), data.get('created', [])
         report.unlink()
     except (OSError, ValueError):
-        found = []
+        found, created = [], []
     if found:
         cfg = load_config()
         cfg['containers'] = sorted(set(cfg.get('containers', [])) | set(found))
         save_config(cfg)
+    for sid, label, _, _, how in SERVICES:
+        target = how.split(':', 1)[1]
+        if sid in picked and sid in SECRET_SERVICES and target in found and target not in created:
+            forget_password(sid)                     # it was already there, made without a password
+            print(f"   ! {label} was made outside pxm and has no password: pxm service protect {sid}", flush=True)
 
     step('Web server and PHP')
     USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2327,6 +2458,8 @@ def doctor_checks():
     out.append(('a global PHP', has_php, 'pxm php install 8.5'))
     if shutil.which('omarchy'):
         out.append(('bar icon', omarchy_plugin_enabled() is not False, 'omarchy plugin enable pxm'))
+    open_ = [s['id'] for s in services_status(cfg) if s.get('open')]
+    out.append(('database passwords', not open_, 'no password on ' + ', '.join(open_) + f': pxm service protect {open_[0]}' if open_ else ''))
     return out
 
 
@@ -2346,7 +2479,8 @@ def uninstall(purge=False, assume_yes=False):
     print('This removes what pxm setup changed: the *.test addresses, the web server, the HTTPS certificate,')
     print('the port setting, the shell PATH line and the window rule. Your sites and Docker databases are kept.')
     if purge:
-        print('--purge: your PHP versions and pxm settings are deleted too.')
+        print('--purge: your PHP versions and pxm settings are deleted too, including the database passwords pxm')
+        print('made (the containers keep them: note them first with `pxm service info mysql`, etc.).')
     if not assume_yes and ask('Continue?', 'no').lower() not in ('y', 'yes'):
         print('Nothing changed.')
         return
@@ -2574,8 +2708,12 @@ def main(argv):
                 print(f"  {i:9} {n:20} {'running' if port_open(port) else 'stopped':8} :{port}")
         elif sub in ('start', 'stop') and len(rest) > 1:
             service(sub, rest[1])
+        elif sub == 'protect' and len(rest) > 1:
+            service_protect(rest[1])
+        elif sub == 'info' and len(rest) > 1:
+            service_show(rest[1])
         else:
-            die('usage: pxm service list | start <name> | stop <name>')
+            die('usage: pxm service list | start <name> | stop <name> | info <name> | protect <name>')
     elif cmd == 'node':
         sub = rest[0] if rest else 'list'
         arg = rest[1] if len(rest) > 1 else None
