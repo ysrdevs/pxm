@@ -225,11 +225,11 @@ Item {
           Row {
             spacing: Style.space(10)
             bottomPadding: Style.space(14)
-            Text { text: root.snake; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.display; anchors.verticalCenter: parent.verticalCenter }
+            Text { textFormat: Text.PlainText; text: root.snake; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.display; anchors.verticalCenter: parent.verticalCenter }
             Column {
               anchors.verticalCenter: parent.verticalCenter
-              Text { text: "pxm"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-              Text { text: root.ready ? "PHP " + (root.st.global_full || "…") : "not set up yet"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+              Text { textFormat: Text.PlainText; text: "pxm"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+              Text { textFormat: Text.PlainText; text: root.ready ? "PHP " + (root.st.global_full || "…") : "not set up yet"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
             }
           }
 
@@ -248,15 +248,15 @@ Item {
                 anchors.leftMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(10)
-                Text { text: modelData.icon; width: Style.space(18); color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body }
-                Text { text: modelData.label; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: root.section === modelData.id }
+                Text { textFormat: Text.PlainText; text: modelData.icon; width: Style.space(18); color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body }
+                Text { textFormat: Text.PlainText; text: modelData.label; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: root.section === modelData.id }
               }
               MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.section = modelData.id }
             }
           }
         }
 
-        Text {
+        Text { textFormat: Text.PlainText;
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
@@ -309,7 +309,7 @@ Item {
         radius: Style.cornerRadius
         color: Qt.rgba(root.bg.r, root.bg.g, root.bg.b, 0.95)
         border.color: root.line
-        Text { id: toastText; anchors.centerIn: parent; text: root.toast; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption }
+        Text { textFormat: Text.PlainText; id: toastText; anchors.centerIn: parent; text: root.toast; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption }
       }
     }
   }
@@ -324,8 +324,8 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Welcome to pxm"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Welcome to pxm"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "pxm needs a one-time setup. It installs the web server, gives every folder in your sites folder an https://<folder>.test address with a trusted certificate, and downloads the latest PHP. It asks which sites folder to use, and for your password once."
         color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body
@@ -334,7 +334,7 @@ Item {
         text: "Run setup"; iconText: "\uf013"; bordered: true; foreground: root.fg; fontFamily: root.ff
         onClicked: root.runSetup()
       }
-      Text {
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Or run this in a terminal:  " + root.tilde(root.pxm) + " setup"
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -351,8 +351,8 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Sites"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Sites"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Every folder in " + root.tilde(root.st.sites_dir) + " is served at https://<folder>.test. You can also link any other folder."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -398,14 +398,14 @@ Item {
             newName.text = ""
           }
         }
-        Text {
+        Text { textFormat: Text.PlainText;
           anchors.verticalCenter: parent.verticalCenter
           text: "opens a terminal running `laravel new`"
           color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
         }
       }
 
-      Text {
+      Text { textFormat: Text.PlainText;
         visible: root.siteList.length === 0
         text: "No sites yet."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.body
@@ -432,12 +432,12 @@ Item {
 
             Row {
               spacing: Style.space(10)
-              Text {
+              Text { textFormat: Text.PlainText;
                 text: (siteCard.modelData.secure ? "  " : "  ") + siteCard.modelData.name + ".test"
                 color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.pxDo(["open", siteCard.modelData.url]) }
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 text: (siteCard.modelData.laravel ? "Laravel · " : "") + siteCard.modelData.source
                 color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
                 anchors.verticalCenter: parent.verticalCenter
@@ -446,7 +446,7 @@ Item {
             Row {
               visible: !!siteCard.modelData.node_missing
               spacing: Style.space(10)
-              Text {
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: "\uf071  This project asks for Node " + siteCard.modelData.node_spec + " (" + siteCard.modelData.node_file + "), which isn't installed."
                 color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -458,7 +458,7 @@ Item {
                 onClicked: root.run(["node", "install", siteCard.modelData.node_spec], "Installing Node " + siteCard.modelData.node_spec + "…")
               }
             }
-            Text {
+            Text { textFormat: Text.PlainText;
               text: root.tilde(siteCard.modelData.path) + "   →   " + root.tilde(siteCard.modelData.docroot)
               color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
               width: parent.width; elide: Text.ElideMiddle
@@ -498,7 +498,7 @@ Item {
                   foreground: root.fg
                   onToggled: root.run([siteCard.modelData.secure ? "unsecure" : "secure", siteCard.modelData.name], "Updating HTTPS…")
                 }
-                Text { text: "HTTPS"; anchors.verticalCenter: parent.verticalCenter; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption }
+                Text { textFormat: Text.PlainText; text: "HTTPS"; anchors.verticalCenter: parent.verticalCenter; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption }
               }
               Row {
                 visible: !(siteCard.modelData.share && siteCard.modelData.share.blocked)
@@ -517,9 +517,9 @@ Item {
                              on ? "Stopping share…" : "Sharing " + siteCard.modelData.name + ".test… (about 10 s)")
                   }
                 }
-                Text { text: "Share"; anchors.verticalCenter: parent.verticalCenter; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption }
+                Text { textFormat: Text.PlainText; text: "Share"; anchors.verticalCenter: parent.verticalCenter; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption }
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 visible: !!(siteCard.modelData.share && siteCard.modelData.share.blocked)
                 height: Style.spacing.controlHeight
                 verticalAlignment: Text.AlignVCenter
@@ -554,7 +554,7 @@ Item {
                 spacing: Style.space(6)
                 Row {
                   spacing: Style.space(10)
-                  Text {
+                  Text { textFormat: Text.PlainText;
                     anchors.verticalCenter: parent.verticalCenter
                     text: "\uf0c2  Public link"
                     color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption; font.bold: true
@@ -579,7 +579,7 @@ Item {
                     onClicked: root.pxDo(["open", siteCard.modelData.share.url])
                   }
                 }
-                Text {
+                Text { textFormat: Text.PlainText;
                   width: parent.width; wrapMode: Text.WordWrap
                   text: "Anyone with this link can open the site until you turn Share off. "
                         + (siteCard.modelData.share && siteCard.modelData.share.mode === "domain"
@@ -589,7 +589,7 @@ Item {
                 }
                 Repeater {
                   model: siteCard.modelData.share ? (siteCard.modelData.share.warnings || []) : []
-                  Text {
+                  Text { textFormat: Text.PlainText;
                     required property var modelData
                     width: shareCol.width; wrapMode: Text.WordWrap
                     text: "\uf071  " + modelData
@@ -613,8 +613,8 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "PHP"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "PHP"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "The global version runs every site and the `php` command, unless a project is pinned (Sites → PHP dropdown, or `pxm php isolate`)."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -654,15 +654,15 @@ Item {
             spacing: Style.space(8)
             Row {
               spacing: Style.space(10)
-              Text { text: root.phpLabel(verCard.modelData.name === "system" ? "system" : verCard.modelData.label); color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-              Text {
+              Text { textFormat: Text.PlainText; text: root.phpLabel(verCard.modelData.name === "system" ? "system" : verCard.modelData.label); color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: verCard.modelData.version + " · " + (verCard.modelData.kind === "full" ? "full build" : verCard.modelData.kind === "system" ? "Arch package" : "quick download")
                       + ((verCard.modelData.name === "system" ? "system" : verCard.modelData.label) === root.st.global ? "  · global" : "")
                 color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
               }
             }
-            Text {
+            Text { textFormat: Text.PlainText;
               width: parent.width
               wrapMode: Text.WordWrap
               maximumLineCount: root.expandedExt === verCard.modelData.name ? 99 : 2
@@ -696,17 +696,17 @@ Item {
       PanelSectionHeader { text: "INSTALL"; foreground: root.fg; fontFamily: root.ff }
       Repeater {
         model: root.buildingList
-        Text {
+        Text { textFormat: Text.PlainText;
           required property var modelData
           width: parent.inner; elide: Text.ElideRight
           text: "  Building PHP " + modelData.spec + ": " + modelData.status
           color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption
         }
       }
-      Text { text: "Quick download · about a minute · no intl/sodium"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+      Text { textFormat: Text.PlainText; text: "Quick download · about a minute · no intl/sodium"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
       Flow {
         width: parent.inner; spacing: Style.space(8)
-        Text { visible: root.installable.length === 0; text: "All quick versions are installed."; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+        Text { textFormat: Text.PlainText; visible: root.installable.length === 0; text: "All quick versions are installed."; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
         Repeater {
           model: root.installable
           Button {
@@ -718,7 +718,7 @@ Item {
           }
         }
       }
-      Text { text: "Full build · every extension incl. intl & sodium · ~5 min in the background"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+      Text { textFormat: Text.PlainText; text: "Full build · every extension incl. intl & sodium · ~5 min in the background"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
       Flow {
         width: parent.inner; spacing: Style.space(8)
         Repeater {
@@ -733,10 +733,10 @@ Item {
           }
         }
       }
-      Text { text: "Pre-releases · alphas, betas & RCs from php.net · full build"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+      Text { textFormat: Text.PlainText; text: "Pre-releases · alphas, betas & RCs from php.net · full build"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
       Flow {
         width: parent.inner; spacing: Style.space(8)
-        Text { visible: (root.st.prereleases || []).length === 0; text: "No pre-releases right now."; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+        Text { textFormat: Text.PlainText; visible: (root.st.prereleases || []).length === 0; text: "No pre-releases right now."; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
         Repeater {
           model: root.st.prereleases || []
           Button {
@@ -761,13 +761,13 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Services"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Services"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Connection details for your apps. Stopped services stay stopped after a reboot until you switch them on."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
       }
-      Text {
+      Text { textFormat: Text.PlainText;
         visible: root.st.docker === false
         width: parent.inner; wrapMode: Text.WordWrap
         text: "\uf071  MySQL, PostgreSQL, Redis and Mailpit run in Docker, which isn't installed. Install it with: sudo pacman -S docker && sudo systemctl enable --now docker"
@@ -796,9 +796,9 @@ Item {
                 id: svcTitle
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(8)
-                Text { text: "●"; color: svcCard.modelData.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: svcCard.modelData.name; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-                Text { text: svcCard.modelData.up ? "running" : svcCard.modelData.created === false ? "not downloaded yet" : "stopped"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { textFormat: Text.PlainText; text: "●"; color: svcCard.modelData.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { textFormat: Text.PlainText; text: svcCard.modelData.name; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
+                Text { textFormat: Text.PlainText; text: svcCard.modelData.up ? "running" : svcCard.modelData.created === false ? "not downloaded yet" : "stopped"; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
               }
               ToggleSwitch {
                 id: svcToggle
@@ -817,7 +817,7 @@ Item {
                 }
               }
             }
-            Text {
+            Text { textFormat: Text.PlainText;
               visible: svcCard.modelData.created === false && root.svcBusy !== svcCard.modelData.id
               width: parent.width; wrapMode: Text.WordWrap
               text: "Switch it on to download it. The first start takes about a minute; after that it starts in seconds."
@@ -828,8 +828,8 @@ Item {
               Row {
                 required property var modelData
                 spacing: Style.space(10)
-                Text { text: modelData[0]; width: Style.space(110); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: modelData[1]; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { textFormat: Text.PlainText; text: modelData[0]; width: Style.space(110); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { textFormat: Text.PlainText; text: modelData[1]; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
                 PanelActionButton {
                   visible: modelData[1].indexOf("(") !== 0
                   iconText: ""; tooltipText: "Copy"
@@ -844,7 +844,7 @@ Item {
               height: envText.implicitHeight + Style.space(16)
               radius: Style.cornerRadius
               color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
-              Text {
+              Text { textFormat: Text.PlainText;
                 id: envText
                 anchors.left: parent.left; anchors.top: parent.top; anchors.margins: Style.space(8)
                 text: svcCard.modelData.env
@@ -876,16 +876,16 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Mail"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Mail"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Mailpit is a local mail catcher: your apps send email to it like a normal SMTP server, nothing is ever delivered to real inboxes, and every message shows up in the Mailpit inbox in your browser. Perfect for testing password resets, notifications and newsletters."
         color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body
       }
       Row {
         spacing: Style.space(10)
-        Text { text: "●"; color: root.mailpit && root.mailpit.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-        Text { text: root.mailpit && root.mailpit.up ? "Mailpit is running" : root.mailpit && root.mailpit.created === false ? "Mailpit isn't downloaded yet" : "Mailpit is stopped"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
+        Text { textFormat: Text.PlainText; text: "●"; color: root.mailpit && root.mailpit.up ? "#3fb950" : root.dim; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+        Text { textFormat: Text.PlainText; text: root.mailpit && root.mailpit.up ? "Mailpit is running" : root.mailpit && root.mailpit.created === false ? "Mailpit isn't downloaded yet" : "Mailpit is stopped"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
         Button {
           visible: !!root.mailpit && !root.mailpit.up
           text: "Start"; bordered: true; foreground: root.fg; fontFamily: root.ff
@@ -899,8 +899,8 @@ Item {
         Row {
           required property var modelData
           spacing: Style.space(10)
-          Text { text: modelData[0]; width: Style.space(110); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
-          Text { text: modelData[1]; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
+          Text { textFormat: Text.PlainText; text: modelData[0]; width: Style.space(110); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
+          Text { textFormat: Text.PlainText; text: modelData[1]; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
           PanelActionButton {
             iconText: ""; tooltipText: "Copy"
             foreground: root.dim; fontFamily: root.ff
@@ -915,7 +915,7 @@ Item {
         height: mailEnv.implicitHeight + Style.space(16)
         radius: Style.cornerRadius
         color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.06)
-        Text {
+        Text { textFormat: Text.PlainText;
           id: mailEnv
           anchors.left: parent.left; anchors.top: parent.top; anchors.margins: Style.space(8)
           text: root.mailpit ? root.mailpit.env : ""
@@ -927,7 +927,7 @@ Item {
           onClicked: root.copy(root.mailpit ? root.mailpit.env : "", "Mail settings")
         }
       }
-      Text {
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Paste these into your project's .env (replacing the existing MAIL_ lines), then run `php artisan config:clear` if you cache config."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -950,8 +950,8 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Logs"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Logs"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "The latest errors for a site: Laravel's log plus the PHP error log of the version that serves it. Handy when a page shows a blank 500."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -977,8 +977,8 @@ Item {
           spacing: Style.space(6)
           Row {
             spacing: Style.space(10)
-            Text { text: modelData.label; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-            Text { text: root.tilde(modelData.path); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+            Text { textFormat: Text.PlainText; text: modelData.label; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            Text { textFormat: Text.PlainText; text: root.tilde(modelData.path); color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
             PanelActionButton {
               visible: modelData.exists
               iconText: ""; tooltipText: "Open in editor"
@@ -1025,8 +1025,8 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Node"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Node"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Node versions are managed by mise, the version manager Omarchy ships. Anything you do here also shows up in `mise` in the terminal, and the other way round. Terminals switch versions automatically per project."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1036,7 +1036,7 @@ Item {
       Flow {
         width: parent.inner
         spacing: Style.space(8)
-        Text {
+        Text { textFormat: Text.PlainText;
           visible: (root.node.majors || []).length === 0
           text: "No Node installed yet. Pick one under Install."
           color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1052,7 +1052,7 @@ Item {
           }
         }
       }
-      Text {
+      Text { textFormat: Text.PlainText;
         visible: root.node.global_spec === "latest" || root.node.global_spec === "lts"
         width: parent.inner; wrapMode: Text.WordWrap
         text: root.node.global_spec === "latest"
@@ -1079,8 +1079,8 @@ Item {
             spacing: Style.space(8)
             Row {
               spacing: Style.space(10)
-              Text { text: "Node " + nodeCard.modelData.version; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-              Text {
+              Text { textFormat: Text.PlainText; text: "Node " + nodeCard.modelData.version; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: (nodeCard.modelData.lts ? "LTS " + nodeCard.modelData.lts : "current release")
                       + (nodeCard.modelData.version === root.node.global ? "  · global" : "")
@@ -1113,7 +1113,7 @@ Item {
       }
 
       PanelSectionHeader { text: "INSTALL"; foreground: root.fg; fontFamily: root.ff }
-      Text {
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "LTS versions get long-term support and are the safe pick for projects. \"Current\" is the newest release. Each one takes a few seconds."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1121,7 +1121,7 @@ Item {
       Flow {
         width: parent.inner
         spacing: Style.space(8)
-        Text {
+        Text { textFormat: Text.PlainText;
           visible: (root.node.lines || []).length === 0
           text: "Couldn't reach nodejs.org to list versions."
           color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1156,7 +1156,7 @@ Item {
           Item {
             width: parent.width
             height: Math.max(nvTitle.implicitHeight, nvToggle.implicitHeight)
-            Text {
+            Text { textFormat: Text.PlainText;
               id: nvTitle
               anchors.verticalCenter: parent.verticalCenter
               text: "Follow .nvmrc / .node-version files"
@@ -1171,7 +1171,7 @@ Item {
               onToggled: root.run(["node", "nvmrc", root.node.nvmrc ? "off" : "on"], "Saving…")
             }
           }
-          Text {
+          Text { textFormat: Text.PlainText;
             width: parent.width; wrapMode: Text.WordWrap
             text: "Many projects say which Node they need in a .nvmrc file. With this on, a terminal opened in that project uses that version automatically. Pick a version per site on the Sites page: pxm writes the .nvmrc for you."
             color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1190,8 +1190,8 @@ Item {
       width: parent ? parent.width : 0
       readonly property real inner: width - padding * 2
 
-      Text { text: "Settings"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text {
+      Text { textFormat: Text.PlainText; text: "Settings"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.title; font.bold: true }
+      Text { textFormat: Text.PlainText;
         width: parent.inner; wrapMode: Text.WordWrap
         text: "Which apps pxm opens things with. \"System default\" follows Omarchy's own setting, so it changes when you change Omarchy's default. Only apps installed on this laptop are listed."
         color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1213,8 +1213,8 @@ Item {
             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
             anchors.margins: Style.space(12)
             spacing: Style.space(10)
-            Text { text: prefCard.modelData.title; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-            Text { text: prefCard.modelData.hint; width: parent.width; wrapMode: Text.WordWrap; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
+            Text { textFormat: Text.PlainText; text: prefCard.modelData.title; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
+            Text { textFormat: Text.PlainText; text: prefCard.modelData.hint; width: parent.width; wrapMode: Text.WordWrap; color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption }
             Flow {
               width: parent.width
               spacing: Style.space(10)
@@ -1261,7 +1261,7 @@ Item {
                   onClicked: root.run(["prefs", "set", prefCard.modelData.id, "custom", String(customField.text)], "Saving…", "prefs")
                 }
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 width: parent.width; wrapMode: Text.WordWrap
                 text: "{path} is replaced by the folder or file (the address, for the browser). If you leave it out, it's added at the end."
                 color: root.dim; font.family: root.ff; font.pixelSize: Style.font.caption
@@ -1282,8 +1282,8 @@ Item {
           anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
           anchors.margins: Style.space(12)
           spacing: Style.space(10)
-          Text { text: "Sharing links"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
-          Text {
+          Text { textFormat: Text.PlainText; text: "Sharing links"; color: root.fg; font.family: root.ff; font.pixelSize: Style.font.body; font.bold: true }
+          Text { textFormat: Text.PlainText;
             width: parent.width; wrapMode: Text.WordWrap
             text: root.st.share_domain
                   ? "Shared sites get https://<site>." + root.st.share_domain + " (always the same link per site), through your Cloudflare account."

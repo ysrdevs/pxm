@@ -65,6 +65,7 @@ Panel {
   }
   function launch(cmd) { if (root.bar) root.bar.run(cmd) }
   function q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'" }
+  function markup(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
   function isInstalling(minor) { return (st.installing || []).indexOf(minor) !== -1 }
   function buildStatus(spec) { var b = st.building || {}; return b[spec] !== undefined ? b[spec] : null }
   readonly property var buildingList: {
@@ -92,7 +93,7 @@ Panel {
   Process {
     id: actionProc
     stderr: StdioCollector {
-      onStreamFinished: if (String(text).trim() !== "") root.launch("omarchy-notification-send -g " + root.q(root.phpIcon) + " 'pxm' " + root.q(String(text).trim()))
+      onStreamFinished: if (String(text).trim() !== "") root.launch("omarchy-notification-send -g " + root.q(root.phpIcon) + " 'pxm' " + root.q(root.markup(String(text).trim())))
     }
     onExited: { root.busy = ""; root.svcBusy = ""; root.shareBusy = ""; root.refresh() }
   }
@@ -146,10 +147,10 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
-            Text { text: root.pxIcon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.display }
+            Text { textFormat: Text.PlainText; text: root.pxIcon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.display }
           }
         }
-        Text {
+        Text { textFormat: Text.PlainText;
           width: parent.width
           wrapMode: Text.WordWrap
           text: "Sets up *.test sites with HTTPS, PHP and the web server. Asks for your password once."
@@ -187,7 +188,7 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
-            Text { text: root.pxIcon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.display }
+            Text { textFormat: Text.PlainText; text: root.pxIcon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.display }
           }
         }
 
@@ -236,7 +237,7 @@ Panel {
         // builds in progress (always visible)
         Repeater {
           model: root.buildingList
-          Text {
+          Text { textFormat: Text.PlainText;
             required property var modelData
             width: column.width
             elide: Text.ElideRight
@@ -251,14 +252,14 @@ Panel {
           spacing: Style.space(6)
 
           // quick downloads
-          Text {
+          Text { textFormat: Text.PlainText;
             text: "QUICK DOWNLOAD  ·  about a minute  ·  no intl/sodium"
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
           }
           Flow {
             width: parent.width
             spacing: Style.space(6)
-            Text {
+            Text { textFormat: Text.PlainText;
               visible: root.installable.length === 0
               text: "All quick versions are installed."
               color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -278,7 +279,7 @@ Panel {
           }
 
           // full builds
-          Text {
+          Text { textFormat: Text.PlainText;
             text: "FULL BUILD  ·  every extension incl. intl & sodium  ·  ~5 min in background"
             width: parent.width; wrapMode: Text.WordWrap
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -302,7 +303,7 @@ Panel {
           }
 
           // pre-releases
-          Text {
+          Text { textFormat: Text.PlainText;
             text: "PRE-RELEASES  ·  alphas, betas & RCs from php.net  ·  full build"
             width: parent.width; wrapMode: Text.WordWrap
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -310,7 +311,7 @@ Panel {
           Flow {
             width: parent.width
             spacing: Style.space(6)
-            Text {
+            Text { textFormat: Text.PlainText;
               visible: (root.st.prereleases || []).length === 0
               text: "No pre-releases right now."
               color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -337,7 +338,7 @@ Panel {
         Flow {
           width: parent.width
           spacing: Style.space(6)
-          Text {
+          Text { textFormat: Text.PlainText;
             visible: (root.node.majors || []).length === 0
             text: "No Node yet."
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -393,7 +394,7 @@ Panel {
         // ---------------- sites ----------------
         PanelSectionHeader { text: "SITES"; foreground: root.foreground; fontFamily: root.fontFamily }
 
-        Text {
+        Text { textFormat: Text.PlainText;
           visible: root.siteList.length === 0
           width: parent.width
           wrapMode: Text.WordWrap
@@ -427,7 +428,7 @@ Panel {
                 fontFamily: root.fontFamily
                 onClicked: root.act([siteRow.modelData.secure ? "unsecure" : "secure", siteRow.modelData.name], "Updating " + siteRow.modelData.name + ".test…")
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: siteRow.modelData.name + ".test"
                 color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body
@@ -437,7 +438,7 @@ Panel {
                   onClicked: { root.launch(root.q(root.pxm) + " open " + root.q(siteRow.modelData.url)); root.close() }
                 }
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.min(implicitWidth, Math.max(0, siteLeft.width - x))
                 elide: Text.ElideRight
@@ -497,7 +498,7 @@ Panel {
           visible: root.sharedList.length > 0
           width: parent.width
           spacing: Style.space(6)
-          Text {
+          Text { textFormat: Text.PlainText;
             text: "SHARING NOW  ·  anyone with the link can open it"
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
           }
@@ -511,7 +512,7 @@ Panel {
               Item {
                 width: parent.width
                 height: Style.space(30)
-                Text {
+                Text { textFormat: Text.PlainText;
                   anchors.left: parent.left
                   anchors.leftMargin: Style.space(6)
                   anchors.right: shareBtns.left
@@ -547,7 +548,7 @@ Panel {
               }
               Repeater {
                 model: shareRow.modelData.share.warnings || []
-                Text {
+                Text { textFormat: Text.PlainText;
                   required property var modelData
                   width: shareRow.width - Style.space(12)
                   x: Style.space(6)
@@ -581,7 +582,7 @@ Panel {
           }
         }
 
-        Text {
+        Text { textFormat: Text.PlainText;
           visible: !root.st.trusted
           width: parent.width
           wrapMode: Text.WordWrap
@@ -603,18 +604,18 @@ Panel {
             Row {
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(8)
-              Text {
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: "●"
                 color: modelData.up ? "#3fb950" : root.dim
                 font.pixelSize: Style.font.caption
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: modelData.name
                 color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body
               }
-              Text {
+              Text { textFormat: Text.PlainText;
                 anchors.verticalCenter: parent.verticalCenter
                 text: modelData.up ? "running · :" + modelData.port
                       : modelData.created === false ? "first start downloads it" : "stopped · :" + modelData.port
