@@ -122,7 +122,9 @@ Item {
   }
   function refreshPrefs() { if (!prefsProc.running) prefsProc.running = true }
   function flash(msg) { toast = msg; toastTimer.restart() }
-  function copy(text, what) { Quickshell.execDetached(["wl-copy", String(text)]); flash((what || "Text") + " copied") }
+  // The text goes to wl-copy over stdin, never argv: passwords are copied here, and /proc shows every
+  // process's arguments to every account on the computer.
+  function copy(text, what) { clip.payload = String(text); clip.running = true; flash((what || "Text") + " copied") }
   function tilde(p) { return String(p || "").replace(home, "~") }
   function refresh() { if (!statusProc.running) statusProc.running = true }
   function refreshPhp() { if (!phpProc.running) phpProc.running = true }
@@ -149,6 +151,13 @@ Item {
 
   onSectionChanged: { if (section === "logs") refreshLogs(); if (section === "php") refreshPhp(); if (section === "settings") refreshPrefs() }
 
+  Process {
+    id: clip
+    property string payload: ""
+    command: ["wl-copy"]
+    stdinEnabled: true
+    onStarted: { write(payload); payload = ""; stdinEnabled = false }
+  }
   Process {
     id: statusProc
     command: [root.pxm, "status", "--json"]

@@ -64,6 +64,7 @@ Panel {
     actionProc.running = true
   }
   function launch(cmd) { if (root.bar) root.bar.run(cmd) }
+  function copy(text, what) { clip.payload = String(text); clip.note = what || "Copied"; clip.running = true }
   function q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'" }
   function markup(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
   function isInstalling(minor) { return (st.installing || []).indexOf(minor) !== -1 }
@@ -83,6 +84,15 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  Process {   // clipboard text goes over stdin, never argv (/proc shows arguments to every account)
+    id: clip
+    property string payload: ""
+    property string note: ""
+    command: ["wl-copy"]
+    stdinEnabled: true
+    onStarted: { write(payload); payload = ""; stdinEnabled = false }
+    onExited: if (note) { root.launch("omarchy-notification-send -g " + root.q(root.phpIcon) + " " + root.q(note)); note = "" }
+  }
   Process {
     id: statusProc
     command: [root.pxm, "status", "--json"]
@@ -531,8 +541,7 @@ Panel {
                   PanelActionButton {
                     iconText: "\uf0c5"; tooltipText: "Copy link"
                     foreground: root.foreground; fontFamily: root.fontFamily
-                    onClicked: root.launch("wl-copy " + root.q(shareRow.modelData.share.url) + " && omarchy-notification-send -g "
-                                           + root.q(root.phpIcon) + " 'Link copied' " + root.q(shareRow.modelData.share.url))
+                    onClicked: root.copy(shareRow.modelData.share.url, "Link copied")
                   }
                   PanelActionButton {
                     iconText: "\uf08e"; tooltipText: "Open the public link"
